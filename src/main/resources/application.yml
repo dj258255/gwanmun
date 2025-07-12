@@ -1,0 +1,11 @@
+server:
+  # 기본 8080은 다른 프로세스가 점유할 수 있어 8090으로 고정한다.
+  port: 8090
+
+spring:
+  application:
+    name: gwanmun
+
+logging:
+  level:
+    io.gwanmun: INFO

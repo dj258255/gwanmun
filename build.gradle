@@ -1,0 +1,39 @@
+plugins {
+	id 'java'
+	id 'org.springframework.boot' version '3.3.5'
+	id 'io.spring.dependency-management' version '1.1.6'
+}
+
+group = 'io.gwanmun'
+version = '0.1.0'
+
+java {
+	// 시스템 JDK는 25지만, 안정성을 위해 툴체인을 21로 고정한다.
+	// (전문 파서는 java.nio.charset·byte[] 위주라 최신 JDK 이점이 없고, LTS가 재현성에 유리)
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	implementation 'org.springframework.boot:spring-boot-starter-web'
+	// DTO ↔ JSON 브릿지 (Jackson은 web 스타터가 물고 온다. 명시적 의존은 두지 않는다.)
+
+	// 게터·무인자 생성자 보일러플레이트 제거 (버전은 Boot BOM 관리).
+	compileOnly 'org.projectlombok:lombok'
+	annotationProcessor 'org.projectlombok:lombok'
+	testCompileOnly 'org.projectlombok:lombok'
+	testAnnotationProcessor 'org.projectlombok:lombok'
+
+	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testImplementation 'org.assertj:assertj-core'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+}

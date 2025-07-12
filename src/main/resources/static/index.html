@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>gwanmun — 전문 ↔ JSON 왕복 데모</title>
+	<style>
+		:root {
+			--bg: #0f1216;
+			--panel: #171b21;
+			--panel-2: #1e242c;
+			--border: #2a323c;
+			--text: #d7dee6;
+			--muted: #8b97a3;
+			--accent: #4a9eff;
+			--accent-2: #2f7fd6;
+			--ok: #4bd07a;
+			--err: #ff6b6b;
+			--mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+		}
+		* { box-sizing: border-box; }
+		body {
+			margin: 0;
+			background: var(--bg);
+			color: var(--text);
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+			line-height: 1.5;
+		}
+		header {
+			padding: 20px 28px;
+			border-bottom: 1px solid var(--border);
+			background: var(--panel);
+		}
+		header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+		header p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+		main {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 18px;
+			padding: 20px 28px;
+			max-width: 1180px;
+			margin: 0 auto;
+		}
+		@media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+		.card {
+			background: var(--panel);
+			border: 1px solid var(--border);
+			border-radius: 10px;
+			padding: 18px;
+		}
+		.card h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+		.card .sub { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+		label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+		select, input, textarea {
+			width: 100%;
+			background: var(--panel-2);
+			border: 1px solid var(--border);
+			color: var(--text);
+			border-radius: 6px;
+			padding: 8px 10px;
+			font-size: 13px;
+			font-family: inherit;
+		}
+		input, textarea { font-family: var(--mono); }
+		textarea { resize: vertical; min-height: 90px; }
+		button {
+			margin-top: 14px;
+			background: var(--accent-2);
+			color: #fff;
+			border: 0;
+			border-radius: 6px;
+			padding: 9px 16px;
+			font-size: 13px;
+			font-weight: 600;
+			cursor: pointer;
+		}
+		button:hover { background: var(--accent); }
+		.out {
+			margin-top: 14px;
+			background: #0b0e12;
+			border: 1px solid var(--border);
+			border-radius: 8px;
+			padding: 12px;
+			font-family: var(--mono);
+			font-size: 12px;
+			white-space: pre;
+			overflow-x: auto;
+		}
+		.out .label { color: var(--muted); }
+		.hexbyte { color: var(--accent); }
+		.meta { color: var(--muted); font-size: 12px; margin-top: 8px; }
+		.err { color: var(--err); }
+		.ok { color: var(--ok); }
+		.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+		@media (max-width: 520px) { .field-grid { grid-template-columns: 1fr; } }
+		code { color: var(--accent); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+	</style>
+</head>
+<body>
+<header>
+	<h1>gwanmun — 고정길이 전문 ↔ JSON 왕복</h1>
+	<p>왼쪽에서 필드를 입력해 전문을 만들고(hex 덤프), 오른쪽에 hex를 붙여넣어 JSON으로 되돌립니다. 바이트가 진실입니다.</p>
+</header>
+
+<main>
+	<!-- 왼쪽: JSON → 전문 -->
+	<section class="card">
+		<h2>1) 필드 → 전문 (Build)</h2>
+		<p class="sub">DTO 필드를 고정길이 바이트로 인코딩합니다. 숫자=좌측 제로패딩, 문자=우측 공백패딩, 한글=EUC-KR 2byte.</p>
+
+		<label for="buildSpec">전문 스펙</label>
+		<select id="buildSpec"></select>
+
+		<div id="buildFields" class="field-grid"></div>
+
+		<button id="buildBtn">전문 생성</button>
+
+		<div class="meta">생성된 전문 (hex + 아스키 병기)</div>
+		<div id="buildOut" class="out">아직 생성 전입니다.</div>
+	</section>
+
+	<!-- 오른쪽: 전문 → JSON -->
+	<section class="card">
+		<h2>2) 전문 → JSON (Parse)</h2>
+		<p class="sub">전문 hex를 붙여넣으면 오프셋대로 잘라 EUC-KR로 디코딩하고 패딩을 제거해 JSON으로 돌려줍니다.</p>
+
+		<label for="parseSpec">전문 스펙</label>
+		<select id="parseSpec"></select>
+
+		<label for="parseHex">전문 hex (공백·개행 무시)</label>
+		<textarea id="parseHex" placeholder="예: 30323030..."></textarea>
+
+		<button id="parseBtn">파싱</button>
+		<button id="copyFromBuild" style="background:var(--panel-2);">← 왼쪽 결과 가져오기</button>
+
+		<div class="meta">파싱된 JSON</div>
+		<div id="parseOut" class="out">아직 파싱 전입니다.</div>
+	</section>
+</main>
+
+<script>
+	// 학습용 합성 스펙 2종. 서버의 @Field 선언과 동일한 레이아웃(길이는 byte).
+	const SPECS = {
+		balanceRequest: {
+			label: "잔액조회 요청 (30 byte)",
+			fields: [
+				{ name: "messageType", label: "전문구분", def: "0200" },
+				{ name: "accountNo", label: "계좌번호(숫자14)", def: "12345678901234" },
+				{ name: "txCode", label: "거래코드", def: "IN01" },
+				{ name: "filler", label: "필러(공백8)", def: "" }
+			]
+		},
+		balanceResponse: {
+			label: "잔액조회 응답 (61 byte)",
+			fields: [
+				{ name: "messageType", label: "전문구분", def: "0210" },
+				{ name: "accountNo", label: "계좌번호(숫자14)", def: "12345678901234" },
+				{ name: "txCode", label: "거래코드", def: "IN01" },
+				{ name: "balance", label: "잔액(숫자15)", def: "1234567" },
+				{ name: "responseCode", label: "응답코드", def: "0000" },
+				{ name: "responseMessage", label: "응답메시지(한글, EUC-KR)", def: "정상 처리되었습니다" }
+			]
+		}
+	};
+
+	function initSelects() {
+		for (const sel of [document.getElementById("buildSpec"), document.getElementById("parseSpec")]) {
+			for (const [key, spec] of Object.entries(SPECS)) {
+				const opt = document.createElement("option");
+				opt.value = key;
+				opt.textContent = spec.label;
+				sel.appendChild(opt);
+			}
+		}
+	}
+
+	function renderBuildFields() {
+		const key = document.getElementById("buildSpec").value;
+		const box = document.getElementById("buildFields");
+		box.innerHTML = "";
+		for (const f of SPECS[key].fields) {
+			const label = document.createElement("label");
+			label.textContent = f.label;
+			const input = document.createElement("input");
+			input.id = "f_" + f.name;
+			input.value = f.def;
+			box.appendChild(label);
+			box.appendChild(input);
+		}
+	}
+
+	// hex 문자열을 8byte 단위 줄로 예쁘게 나눈다.
+	function prettyHex(hex, ascii) {
+		let out = "";
+		for (let i = 0; i < hex.length; i += 16) {
+			const hexPart = hex.slice(i, i + 16).replace(/(..)/g, "$1 ").trim();
+			const asciiPart = ascii.slice(i / 2, i / 2 + 8);
+			const off = String(i / 2).padStart(4, "0");
+			out += off + "  " + hexPart.padEnd(24, " ") + "  " + asciiPart + "\n";
+		}
+		return out;
+	}
+
+	async function doBuild() {
+		const key = document.getElementById("buildSpec").value;
+		const fields = {};
+		for (const f of SPECS[key].fields) {
+			fields[f.name] = document.getElementById("f_" + f.name).value;
+		}
+		const out = document.getElementById("buildOut");
+		try {
+			const res = await fetch("/api/build", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ spec: key, fields })
+			});
+			const data = await res.json();
+			if (!res.ok) { out.innerHTML = '<span class="err">' + (data.error || "오류") + '</span>'; return; }
+			out.textContent = prettyHex(data.hex, data.ascii);
+			out.innerHTML += '<span class="ok">총 ' + data.length + ' byte</span>';
+			window.__lastHex = data.hex;
+			window.__lastSpec = key;
+		} catch (e) {
+			out.innerHTML = '<span class="err">요청 실패: ' + e.message + '</span>';
+		}
+	}
+
+	async function doParse() {
+		const key = document.getElementById("parseSpec").value;
+		const hex = document.getElementById("parseHex").value;
+		const out = document.getElementById("parseOut");
+		try {
+			const res = await fetch("/api/parse", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ spec: key, hex })
+			});
+			const data = await res.json();
+			if (!res.ok) { out.innerHTML = '<span class="err">' + (data.error || "오류") + '</span>'; return; }
+			out.textContent = JSON.stringify(data, null, 2);
+		} catch (e) {
+			out.innerHTML = '<span class="err">요청 실패: ' + e.message + '</span>';
+		}
+	}
+
+	document.getElementById("buildSpec").addEventListener("change", renderBuildFields);
+	document.getElementById("buildBtn").addEventListener("click", doBuild);
+	document.getElementById("parseBtn").addEventListener("click", doParse);
+	document.getElementById("copyFromBuild").addEventListener("click", () => {
+		if (window.__lastHex) {
+			document.getElementById("parseHex").value = window.__lastHex;
+			document.getElementById("parseSpec").value = window.__lastSpec;
+		}
+	});
+
+	initSelects();
+	renderBuildFields();
+</script>
+</body>
+</html>
