@@ -37,3 +37,17 @@ dependencies {
 tasks.named('test') {
 	useJUnitPlatform()
 }
+
+// 목업 계정계를 앱과 별개의 JVM 프로세스로 띄운다("앱↔계정계 두 프로세스" 구성용).
+//   ./gradlew runMockCore            → 포트 9099
+//   ./gradlew runMockCore --args=9099
+tasks.register('runMockCore', JavaExec) {
+	group = 'application'
+	description = '목업 계정계 TCP 서버를 독립 프로세스로 실행'
+	// 컴파일 툴체인(21)과 같은 런타임으로 실행한다(Gradle 자체 JVM 버전과 무관하게).
+	javaLauncher = javaToolchains.launcherFor {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+	classpath = sourceSets.main.runtimeClasspath
+	mainClass = 'io.gwanmun.transport.MockCoreBankingServer'
+}

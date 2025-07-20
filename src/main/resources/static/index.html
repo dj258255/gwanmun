@@ -94,6 +94,19 @@
 		.field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 		@media (max-width: 520px) { .field-grid { grid-template-columns: 1fr; } }
 		code { color: var(--accent); background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+		.gateway-wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px 32px; }
+		.gateway { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+		.gateway h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+		.gateway .sub { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+		.gw-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+		.gw-row .acct { flex: 1; min-width: 220px; }
+		.gw-row button { margin-top: 0; white-space: nowrap; }
+		.gw-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+		@media (max-width: 860px) { .gw-grid { grid-template-columns: 1fr; } }
+		.gw-grid .full { grid-column: 1 / -1; }
+		.step-label { color: var(--muted); font-size: 12px; margin: 0 0 4px; }
+		.step-label b { color: var(--text); }
+		.dir { color: var(--accent); }
 	</style>
 </head>
 <body>
@@ -137,6 +150,41 @@
 		<div id="parseOut" class="out">아직 파싱 전입니다.</div>
 	</section>
 </main>
+
+<!-- 아래: 게이트웨이 왕복 (실제 TCP 소켓으로 목업 계정계와 대화) -->
+<div class="gateway-wrap">
+	<section class="gateway">
+		<h2>3) 게이트웨이 왕복 (REST → 전문 → TCP → 전문 → JSON)</h2>
+		<p class="sub">
+			계좌번호만 넣으면 gwanmun이 요청 전문을 만들어 <b>TCP 소켓</b>으로 목업 계정계에 보내고,
+			돌아온 응답 전문을 파싱해 JSON으로 돌려줍니다. 아래 hex는 <b>실제로 소켓을 타고 오간 바이트</b>입니다.
+			<span id="gwCore" class="dir"></span>
+		</p>
+
+		<div class="gw-row">
+			<div class="acct">
+				<label for="gwAccount">계좌번호 (숫자 1~14자리)</label>
+				<input id="gwAccount" value="12345678901234">
+			</div>
+			<button id="gwBtn">계정계로 전송</button>
+		</div>
+
+		<div class="gw-grid">
+			<div>
+				<p class="step-label">(a) 나간 <b>요청 전문</b> <span class="dir">→ 계정계</span> (30 byte hex)</p>
+				<div id="gwReq" class="out">전송 전입니다.</div>
+			</div>
+			<div>
+				<p class="step-label">(b) 돌아온 <b>응답 전문</b> <span class="dir">← 계정계</span> (61 byte hex)</p>
+				<div id="gwRes" class="out">전송 전입니다.</div>
+			</div>
+			<div class="full">
+				<p class="step-label">(c) 응답 전문을 파싱한 <b>최종 JSON</b></p>
+				<div id="gwJson" class="out">전송 전입니다.</div>
+			</div>
+		</div>
+	</section>
+</div>
 
 <script>
 	// 학습용 합성 스펙 2종. 서버의 @Field 선언과 동일한 레이아웃(길이는 byte).
@@ -242,6 +290,39 @@
 			out.innerHTML = '<span class="err">요청 실패: ' + e.message + '</span>';
 		}
 	}
+
+	// --- 게이트웨이 왕복 (TCP) ---
+	async function doGateway() {
+		const accountNo = document.getElementById("gwAccount").value.trim();
+		const reqOut = document.getElementById("gwReq");
+		const resOut = document.getElementById("gwRes");
+		const jsonOut = document.getElementById("gwJson");
+		reqOut.textContent = "전송 중...";
+		resOut.textContent = "";
+		jsonOut.textContent = "";
+		try {
+			const res = await fetch("/api/gateway/balance", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ accountNo })
+			});
+			const data = await res.json();
+			if (!res.ok) {
+				reqOut.innerHTML = '<span class="err">' + (data.error || "오류") + '</span>';
+				return;
+			}
+			reqOut.textContent = prettyHex(data.requestHex, data.requestAscii);
+			reqOut.innerHTML += '<span class="ok">총 ' + data.requestLength + ' byte</span>';
+			resOut.textContent = prettyHex(data.responseHex, data.responseAscii);
+			resOut.innerHTML += '<span class="ok">총 ' + data.responseLength + ' byte</span>';
+			jsonOut.textContent = JSON.stringify(data.json, null, 2);
+			document.getElementById("gwCore").textContent =
+				"계정계 " + data.core + " · 소켓 왕복 " + data.elapsedMs + "ms";
+		} catch (e) {
+			reqOut.innerHTML = '<span class="err">요청 실패: ' + e.message + '</span>';
+		}
+	}
+	document.getElementById("gwBtn").addEventListener("click", doGateway);
 
 	document.getElementById("buildSpec").addEventListener("change", renderBuildFields);
 	document.getElementById("buildBtn").addEventListener("click", doBuild);

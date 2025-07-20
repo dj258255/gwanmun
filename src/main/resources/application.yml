@@ -6,6 +6,17 @@ spring:
   application:
     name: gwanmun
 
+# 목업 계정계(코어뱅킹) TCP 연동 설정.
+gwanmun:
+  core:
+    host: 127.0.0.1
+    port: 9099
+    # true면 앱과 함께 목업 계정계를 내장 기동(개발 편의).
+    # false면 계정계를 독립 프로세스로 따로 띄운 "앱↔계정계 두 프로세스" 구성.
+    embedded: true
+    connect-timeout-ms: 2000
+    read-timeout-ms: 3000
+
 logging:
   level:
     io.gwanmun: INFO
