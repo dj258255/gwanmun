@@ -1,4 +1,4 @@
-package io.gwanmun.transport;
+package io.gwanmun.core;
 
 import io.gwanmun.message.MessageCodec;
 import io.gwanmun.message.dto.BalanceInquiryRequest;
@@ -163,7 +163,7 @@ public final class MockCoreBankingServer implements Closeable {
 
 	// ------------------------------------------------------------------
 	// 독립 실행 진입점 — 앱과 별개의 프로세스로 계정계를 띄운다.
-	//   java ... io.gwanmun.transport.MockCoreBankingServer [port]
+	//   java ... io.gwanmun.core.MockCoreBankingServer [port]
 	// ------------------------------------------------------------------
 	public static void main(String[] args) throws Exception {
 		int port = args.length > 0 ? Integer.parseInt(args[0]) : 9099;

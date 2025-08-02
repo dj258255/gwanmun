@@ -3,7 +3,7 @@ package io.gwanmun.gateway;
 import io.gwanmun.message.MessageCodec;
 import io.gwanmun.message.dto.BalanceInquiryRequest;
 import io.gwanmun.message.dto.BalanceInquiryResponse;
-import io.gwanmun.transport.CoreBankingClient;
+import io.gwanmun.core.CoreBankingClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;

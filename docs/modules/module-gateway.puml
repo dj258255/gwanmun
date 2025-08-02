@@ -1,0 +1,22 @@
+@startuml
+set separator none
+title gateway · 관문(필터 체인)
+
+top to bottom direction
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Component>
+
+Container_Boundary("GwanmunApplication.GwanmunApplication_boundary", "GwanmunApplication", $tags="") {
+  Component(GwanmunApplication.GwanmunApplication.core계정계연동, "core · 계정계 연동", $techn="Module", $descr="", $tags="", $link="")
+  Component(GwanmunApplication.GwanmunApplication.message전문코덱, "message · 전문 코덱", $techn="Module", $descr="", $tags="", $link="")
+  Component(GwanmunApplication.GwanmunApplication.gateway관문필터체인, "gateway · 관문(필터 체인)", $techn="Module", $descr="", $tags="", $link="")
+}
+
+Rel(GwanmunApplication.GwanmunApplication.gateway관문필터체인, GwanmunApplication.GwanmunApplication.message전문코덱, "depends on", $techn="", $tags="", $link="")
+Rel(GwanmunApplication.GwanmunApplication.gateway관문필터체인, GwanmunApplication.GwanmunApplication.core계정계연동, "uses", $techn="", $tags="", $link="")
+Rel(GwanmunApplication.GwanmunApplication.core계정계연동, GwanmunApplication.GwanmunApplication.message전문코덱, "depends on", $techn="", $tags="", $link="")
+
+SHOW_LEGEND(true)
+@enduml

@@ -1,4 +1,4 @@
-package io.gwanmun.transport;
+package io.gwanmun.core;
 
 import io.gwanmun.message.dto.BalanceInquiryResponse;
 import io.gwanmun.message.spec.MessageSpec;

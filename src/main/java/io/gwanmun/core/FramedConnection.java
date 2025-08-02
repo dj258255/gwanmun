@@ -1,4 +1,4 @@
-package io.gwanmun.transport;
+package io.gwanmun.core;
 
 import java.io.Closeable;
 import java.io.EOFException;

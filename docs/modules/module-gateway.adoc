@@ -1,0 +1,19 @@
+[%autowidth.stretch, cols="h,a"]
+|===
+|Base package
+|`io.gwanmun.gateway`
+|Spring components
+|_Services_
+
+* `i.g.g.GatewayService`
+
+_Configuration properties_
+
+* `i.g.g.GatewayProperties`
+
+_Others_
+
+* `i.g.g.GatewayFilterConfig`
+|Bean references
+|* `i.g.c.CoreBankingClient` (in core · 계정계 연동)
+|===

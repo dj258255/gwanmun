@@ -16,6 +16,16 @@ gwanmun:
     embedded: true
     connect-timeout-ms: 2000
     read-timeout-ms: 3000
+  # Phase 3 관문(API 게이트웨이) 설정 — 인증·유량제어.
+  gateway:
+    # API 키 → 클라이언트 id. 등록된 키만 통과(잘못된 키 403, 키 없음 401).
+    api-keys:
+      demo-key-fintech-a: fintech-a
+      demo-key-fintech-b: fintech-b
+    # 클라이언트별 토큰버킷: 순간 5건까지 허용, 분당 30개 속도로 보충(초당 0.5개).
+    # 데모에서 5건 연속 성공 후 429가 뜨는 것을 눈으로 보게 낮게 잡았다.
+    rate-capacity: 5
+    rate-refill-per-minute: 30
 
 logging:
   level:

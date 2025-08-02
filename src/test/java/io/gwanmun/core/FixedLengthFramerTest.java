@@ -1,4 +1,4 @@
-package io.gwanmun.transport;
+package io.gwanmun.core;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

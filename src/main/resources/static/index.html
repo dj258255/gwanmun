@@ -186,6 +186,100 @@
 	</section>
 </div>
 
+<!-- 아래: 게이트웨이 방어 (인증·유량제어 필터 체인) -->
+<div class="gateway-wrap">
+	<section class="gateway">
+		<h2>4) 게이트웨이 방어 (인증 → 라우팅 → 유량제어)</h2>
+		<p class="sub">
+			같은 <code>/api/gateway/balance</code> 앞에 손으로 짠 필터 체인을 세웠습니다.
+			<b>X-API-Key</b>로 인증(없으면 401, 잘못되면 403)하고, 클라이언트별 <b>토큰버킷</b>으로
+			유량을 제어합니다(용량 초과 시 429 + Retry-After). 아래에서 키를 바꿔 가며 막히는 순간을 봅니다.
+		</p>
+
+		<div class="gw-row">
+			<div class="acct">
+				<label for="guardKey">X-API-Key</label>
+				<input id="guardKey" value="demo-key-fintech-a">
+			</div>
+			<div style="width:120px;">
+				<label for="guardCount">연속 전송 횟수</label>
+				<input id="guardCount" value="8">
+			</div>
+			<button id="guardBurstBtn">N회 연속 전송</button>
+		</div>
+		<div class="gw-row" style="margin-top:6px;">
+			<button id="guardNoKeyBtn" style="background:var(--panel-2);">키 없이 전송 (401 확인)</button>
+			<button id="guardBadKeyBtn" style="background:var(--panel-2);">잘못된 키 전송 (403 확인)</button>
+		</div>
+
+		<div class="gw-grid">
+			<div class="full">
+				<p class="step-label">각 요청의 관문 판정 <span class="dir">(통과 200 · 인증 401/403 · 유량 429)</span></p>
+				<div id="guardOut" class="out">키와 횟수를 정하고 전송해 보세요.</div>
+			</div>
+		</div>
+	</section>
+</div>
+
+<script>
+	// --- 게이트웨이 방어(인증·유량제어) ---
+	async function sendGuarded(apiKey) {
+		const headers = { "Content-Type": "application/json" };
+		if (apiKey != null) headers["X-API-Key"] = apiKey;
+		const res = await fetch("/api/gateway/balance", {
+			method: "POST", headers,
+			body: JSON.stringify({ accountNo: "12345678901234" })
+		});
+		let body = null;
+		try { body = await res.json(); } catch (e) { body = null; }
+		return { status: res.status, body,
+			remaining: res.headers.get("X-RateLimit-Remaining"),
+			retryAfter: res.headers.get("Retry-After"),
+			client: res.headers.get("X-Gateway-Client") };
+	}
+
+	function guardLine(idx, r) {
+		if (r.status === 200) {
+			const bal = r.body && r.body.json ? r.body.json.balance : "";
+			return '<span class="ok">#' + idx + '  200 통과</span>  잔액=' + bal
+				+ '  (remaining ' + (r.remaining ?? "-") + ')';
+		}
+		if (r.status === 429) {
+			return '<span class="err">#' + idx + '  429 차단</span>  유량 초과 · Retry-After '
+				+ (r.retryAfter ?? "-") + 's';
+		}
+		const reason = r.body && r.body.reason ? r.body.reason : "";
+		return '<span class="err">#' + idx + '  ' + r.status + ' 차단</span>  ' + reason;
+	}
+
+	async function doGuardBurst() {
+		const key = document.getElementById("guardKey").value.trim();
+		const count = Math.max(1, Math.min(50, parseInt(document.getElementById("guardCount").value) || 1));
+		const out = document.getElementById("guardOut");
+		out.textContent = "전송 중...";
+		let passed = 0, blocked = 0, lines = "";
+		for (let i = 1; i <= count; i++) {
+			const r = await sendGuarded(key);
+			if (r.status === 200) passed++; else blocked++;
+			lines += guardLine(i, r) + "\n";
+		}
+		out.innerHTML = lines
+			+ '\n<span class="label">합계: 통과 ' + passed + '건 · 차단 ' + blocked + '건 (클라이언트 키 「'
+			+ key + '」)</span>';
+	}
+
+	async function doGuardSingle(apiKey, label) {
+		const out = document.getElementById("guardOut");
+		out.textContent = label + " ...";
+		const r = await sendGuarded(apiKey);
+		out.innerHTML = guardLine(1, r);
+	}
+
+	document.getElementById("guardBurstBtn").addEventListener("click", doGuardBurst);
+	document.getElementById("guardNoKeyBtn").addEventListener("click", () => doGuardSingle(null, "키 없이 전송"));
+	document.getElementById("guardBadKeyBtn").addEventListener("click", () => doGuardSingle("wrong-key-xyz", "잘못된 키 전송"));
+</script>
+
 <script>
 	// 학습용 합성 스펙 2종. 서버의 @Field 선언과 동일한 레이아웃(길이는 byte).
 	const SPECS = {

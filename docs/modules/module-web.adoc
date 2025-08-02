@@ -1,0 +1,13 @@
+[%autowidth.stretch, cols="h,a"]
+|===
+|Base package
+|`io.gwanmun.web`
+|Spring components
+|_Controllers_
+
+* `i.g.w.GatewayController`
+* `i.g.w.MessageController`
+|Bean references
+|* `i.g.g.GatewayService` (in gateway · 관문(필터 체인))
+* `i.g.m.MessageRegistry` (in message · 전문 코덱)
+|===

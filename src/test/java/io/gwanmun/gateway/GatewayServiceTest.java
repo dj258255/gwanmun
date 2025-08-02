@@ -1,8 +1,8 @@
 package io.gwanmun.gateway;
 
 import io.gwanmun.gateway.GatewayService.GatewayResult;
-import io.gwanmun.transport.CoreBankingClient;
-import io.gwanmun.transport.MockCoreBankingServer;
+import io.gwanmun.core.CoreBankingClient;
+import io.gwanmun.core.MockCoreBankingServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
