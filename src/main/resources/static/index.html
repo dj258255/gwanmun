@@ -107,6 +107,28 @@
 		.step-label { color: var(--muted); font-size: 12px; margin: 0 0 4px; }
 		.step-label b { color: var(--text); }
 		.dir { color: var(--accent); }
+		.lenhdr { color: #ffc04a; font-weight: 700; }
+		.hdrchip { display: inline-block; background: var(--panel-2); border: 1px solid var(--border);
+			border-radius: 6px; padding: 4px 8px; margin: 2px 0 8px; font-family: var(--mono); font-size: 12px; }
+		.hdrchip b { color: #ffc04a; }
+		table.rec { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+		table.rec th, table.rec td { border: 1px solid var(--border); padding: 5px 8px; text-align: right; }
+		table.rec th { color: var(--muted); font-weight: 600; background: var(--panel-2); text-align: right; }
+		table.rec td.txt, table.rec th.txt { text-align: left; }
+		table.rec td.dep { color: var(--ok); }
+		table.rec td.wdr { color: var(--err); }
+		.pool-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 6px 0 12px; }
+		@media (max-width: 620px) { .pool-grid { grid-template-columns: repeat(2, 1fr); } }
+		.pool-cell { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+		.pool-cell .k { color: var(--muted); font-size: 11px; }
+		.pool-cell .v { font-family: var(--mono); font-size: 20px; font-weight: 700; margin-top: 2px; }
+		.pool-cell .v.acc { color: var(--accent); }
+		.pool-cell .v.ok { color: var(--ok); }
+		.pool-cell .v.re { color: #ffc04a; }
+		.bar { height: 10px; border-radius: 5px; background: var(--panel-2); overflow: hidden; margin-top: 6px; display: flex; }
+		.bar .seg-active { background: var(--accent); }
+		.bar .seg-idle { background: var(--ok); }
+		.bar-legend { font-size: 11px; color: var(--muted); margin-top: 4px; }
 	</style>
 </head>
 <body>
@@ -220,6 +242,226 @@
 		</div>
 	</section>
 </div>
+
+<!-- 아래: 가변 전문 왕복 (길이 헤더 + 레코드 N건) -->
+<div class="gateway-wrap">
+	<section class="gateway">
+		<h2>5) 가변 전문 왕복 (거래내역 조회 — 길이 헤더 + 레코드 N건)</h2>
+		<p class="sub">
+			잔액조회는 고정 61byte였지만, 거래내역 조회 응답은 <b>건수만큼 레코드가 붙어</b> 길이가 매번 다릅니다.
+			그래서 전문 앞에 <b>4byte 길이 헤더</b>를 붙여 소켓으로 보내고(<code>LengthPrefixedFramer</code>),
+			받는 쪽은 헤더로 본문 길이를 안 뒤 그만큼 더 모읍니다(2단계). 아래 hex의
+			<span class="lenhdr">노란 4byte</span>가 길이 헤더입니다.
+			<span id="histCore" class="dir"></span>
+		</p>
+
+		<div class="gw-row">
+			<div class="acct">
+				<label for="histAccount">계좌번호 (숫자 1~14자리)</label>
+				<input id="histAccount" value="12345678901234">
+			</div>
+			<div style="width:120px;">
+				<label for="histCount">조회 건수 (1~20)</label>
+				<input id="histCount" value="5">
+			</div>
+			<button id="histBtn">거래내역 조회</button>
+		</div>
+
+		<div class="gw-grid">
+			<div>
+				<p class="step-label">(a) 나간 <b>요청 전선</b> <span class="dir">→ 계정계</span> (길이 헤더 + 40 byte 본문)</p>
+				<div id="histReq" class="out">전송 전입니다.</div>
+			</div>
+			<div>
+				<p class="step-label">(b) 돌아온 <b>응답 전선</b> <span class="dir">← 계정계</span> (길이 헤더 + 가변 본문)</p>
+				<div id="histRes" class="out">전송 전입니다.</div>
+			</div>
+			<div class="full">
+				<p class="step-label">(c) 응답 본문을 파싱한 <b>헤더 + 레코드</b></p>
+				<div id="histParsed" class="out">전송 전입니다.</div>
+			</div>
+		</div>
+	</section>
+</div>
+
+<!-- 아래: 커넥션 풀 상태 -->
+<div class="gateway-wrap">
+	<section class="gateway">
+		<h2>6) 커넥션 풀 상태 (재사용 · 활성/유휴 · 고갈)</h2>
+		<p class="sub">
+			Phase 2 클라이언트는 요청마다 소켓을 새로 열고 닫았습니다. Phase 4는 <code>ConnectionPool</code>에서
+			연결을 빌려 쓰고 반납해 <b>이미 연 소켓을 재사용</b>합니다. 아래에서 여러 번 조회하면,
+			<b>새로 만든 소켓(created)</b>은 최대 크기까지만 늘고 나머지는 <b>재사용(reused)</b>으로 처리되는 걸 봅니다.
+		</p>
+
+		<div class="gw-row">
+			<div style="width:140px;">
+				<label for="poolCount">조회 횟수</label>
+				<input id="poolCount" value="12">
+			</div>
+			<button id="poolSeqBtn">순차 N회 조회</button>
+			<button id="poolConcBtn" style="background:var(--panel-2);">동시 N회 조회</button>
+			<button id="poolRefreshBtn" style="background:var(--panel-2);">풀 상태 새로고침</button>
+		</div>
+
+		<div class="pool-grid" id="poolGrid" style="margin-top:14px;">
+			<div class="pool-cell"><div class="k">최대 크기 (max)</div><div class="v" id="pMax">-</div></div>
+			<div class="pool-cell"><div class="k">활성 (active)</div><div class="v acc" id="pActive">-</div></div>
+			<div class="pool-cell"><div class="k">유휴 (idle)</div><div class="v ok" id="pIdle">-</div></div>
+			<div class="pool-cell"><div class="k">새로 만든 (created)</div><div class="v" id="pCreated">-</div></div>
+			<div class="pool-cell"><div class="k">재사용 (reused)</div><div class="v re" id="pReused">-</div></div>
+			<div class="pool-cell"><div class="k">폐기 (destroyed)</div><div class="v" id="pDestroyed">-</div></div>
+		</div>
+		<div class="bar" id="poolBar"><div class="seg-active" style="width:0"></div><div class="seg-idle" style="width:0"></div></div>
+		<div class="bar-legend"><span style="color:var(--accent)">■</span> 활성 &nbsp; <span style="color:var(--ok)">■</span> 유휴 &nbsp; (거래내역 풀)</div>
+
+		<div class="gw-grid">
+			<div class="full">
+				<p class="step-label">각 조회의 소켓 사용 <span class="dir">(created=갓 연 소켓 · reused #N=재사용)</span></p>
+				<div id="poolOut" class="out">횟수를 정하고 조회해 보세요.</div>
+			</div>
+		</div>
+	</section>
+</div>
+
+<script>
+	// --- 가변 전문 왕복 (거래내역 조회) ---
+	// 8byte(16 hex)/줄 hex 덤프. 앞 headerBytes byte(길이 헤더)는 노랗게 강조.
+	function prettyHexHi(hex, ascii, headerBytes) {
+		const hb = headerBytes * 2;
+		let out = "";
+		for (let i = 0; i < hex.length; i += 16) {
+			let cells = "";
+			for (let j = i; j < i + 16 && j < hex.length; j += 2) {
+				const pair = hex.slice(j, j + 2);
+				cells += (j < hb) ? '<span class="lenhdr">' + pair + '</span> ' : pair + ' ';
+			}
+			const asciiPart = ascii.slice(i / 2, i / 2 + 8);
+			const off = String(i / 2).padStart(4, "0");
+			out += off + "  " + cells + " " + asciiPart + "\n";
+		}
+		return out;
+	}
+
+	function renderRecords(header, records) {
+		let h = '<div class="hdrchip">헤더: 전문구분 <b>' + header.messageType + '</b> · 계좌 ' + header.accountNo
+			+ ' · 건수 <b>' + header.recordCount + '</b> · 전체길이 <b>' + header.totalLength + '</b> byte · 응답코드 ' + header.responseCode + '</div>';
+		let rows = '<table class="rec"><thead><tr>'
+			+ '<th>#</th><th class="txt">거래일자</th><th class="txt">구분</th><th>금액</th><th>거래후잔액</th><th class="txt">적요</th>'
+			+ '</tr></thead><tbody>';
+		for (const r of records) {
+			const dep = r.txType === "입금";
+			rows += '<tr><td>' + r.seq + '</td><td class="txt">' + r.txDate + '</td>'
+				+ '<td class="txt ' + (dep ? 'dep' : 'wdr') + '">' + r.txType + '</td>'
+				+ '<td>' + Number(r.amount).toLocaleString() + '</td>'
+				+ '<td>' + Number(r.balanceAfter).toLocaleString() + '</td>'
+				+ '<td class="txt">' + r.summary + '</td></tr>';
+		}
+		rows += '</tbody></table>';
+		return h + rows;
+	}
+
+	async function doHistory() {
+		const accountNo = document.getElementById("histAccount").value.trim();
+		const count = Math.max(1, Math.min(20, parseInt(document.getElementById("histCount").value) || 5));
+		const reqOut = document.getElementById("histReq");
+		const resOut = document.getElementById("histRes");
+		const parsedOut = document.getElementById("histParsed");
+		reqOut.textContent = "전송 중..."; resOut.textContent = ""; parsedOut.textContent = "";
+		try {
+			const res = await fetch("/api/history", {
+				method: "POST", headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ accountNo, count })
+			});
+			const data = await res.json();
+			if (!res.ok) { reqOut.innerHTML = '<span class="err">' + (data.error || "오류") + '</span>'; return; }
+			reqOut.innerHTML = prettyHexHi(data.requestHex, data.requestAscii, 4)
+				+ '<span class="ok">총 ' + data.requestLength + ' byte (길이 헤더 4 + 본문 ' + (data.requestLength - 4) + ')</span>';
+			resOut.innerHTML = prettyHexHi(data.responseHex, data.responseAscii, 4)
+				+ '<span class="ok">총 ' + data.responseLength + ' byte (길이 헤더 4 + 본문 ' + (data.responseLength - 4) + ' = ' + data.recordCount + '건)</span>';
+			parsedOut.innerHTML = renderRecords(data.header, data.records);
+			document.getElementById("histCore").textContent =
+				"계정계 " + data.core + " · 소켓 왕복 " + data.elapsedMs + "ms · 이 소켓 재사용 " + data.reuseCount + "회";
+			applyPoolStats(data.pool);
+		} catch (e) {
+			reqOut.innerHTML = '<span class="err">요청 실패: ' + e.message + '</span>';
+		}
+	}
+	document.getElementById("histBtn").addEventListener("click", doHistory);
+
+	// --- 커넥션 풀 ---
+	function applyPoolStats(s) {
+		if (!s) return;
+		document.getElementById("pMax").textContent = s.maxSize;
+		document.getElementById("pActive").textContent = s.active;
+		document.getElementById("pIdle").textContent = s.idle;
+		document.getElementById("pCreated").textContent = s.created;
+		document.getElementById("pReused").textContent = s.reused;
+		document.getElementById("pDestroyed").textContent = s.destroyed;
+		const bar = document.getElementById("poolBar");
+		const unit = 100 / s.maxSize;
+		bar.children[0].style.width = (s.active * unit) + "%";
+		bar.children[1].style.width = (s.idle * unit) + "%";
+	}
+
+	async function refreshPool() {
+		const res = await fetch("/api/pool/stats");
+		const data = await res.json();
+		applyPoolStats(data.txnHistory);
+		return data.txnHistory;
+	}
+
+	function poolLine(idx, data) {
+		if (data.reuseCount === 0) {
+			return '<span class="ok">#' + idx + '  created</span>  새 소켓을 열어 조회 (' + data.recordCount + '건, ' + data.elapsedMs + 'ms)';
+		}
+		return '<span style="color:#ffc04a">#' + idx + '  reused #' + data.reuseCount + '</span>  기존 소켓 재사용 ('
+			+ data.recordCount + '건, ' + data.elapsedMs + 'ms)';
+	}
+
+	async function oneHistory() {
+		const res = await fetch("/api/history", {
+			method: "POST", headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ accountNo: "12345678901234", count: 5 })
+		});
+		return res.json();
+	}
+
+	async function doPoolSequential() {
+		const n = Math.max(1, Math.min(100, parseInt(document.getElementById("poolCount").value) || 12));
+		const out = document.getElementById("poolOut");
+		out.textContent = "순차 조회 중...";
+		let lines = "", created = 0, reused = 0;
+		for (let i = 1; i <= n; i++) {
+			const data = await oneHistory();
+			if (data.reuseCount === 0) created++; else reused++;
+			lines += poolLine(i, data) + "\n";
+			applyPoolStats(data.pool);
+		}
+		out.innerHTML = lines + '\n<span class="label">합계: 새로 연 소켓 ' + created + '개 · 재사용 ' + reused + '회 (순차라 소켓 1개면 충분)</span>';
+		refreshPool();
+	}
+
+	async function doPoolConcurrent() {
+		const n = Math.max(1, Math.min(100, parseInt(document.getElementById("poolCount").value) || 12));
+		const out = document.getElementById("poolOut");
+		out.textContent = "동시 조회 중...";
+		const results = await Promise.all(Array.from({ length: n }, () => oneHistory()));
+		let lines = "", created = 0, reused = 0;
+		results.forEach((data, i) => {
+			if (data.reuseCount === 0) created++; else reused++;
+			lines += poolLine(i + 1, data) + "\n";
+		});
+		const stats = await refreshPool();
+		out.innerHTML = lines + '\n<span class="label">합계: 새로 연 소켓 ' + created + '개 · 재사용 ' + reused
+			+ '회 (동시라 최대 ' + stats.maxSize + '개까지 열림 · created=' + stats.created + ')</span>';
+	}
+
+	document.getElementById("poolSeqBtn").addEventListener("click", doPoolSequential);
+	document.getElementById("poolConcBtn").addEventListener("click", doPoolConcurrent);
+	document.getElementById("poolRefreshBtn").addEventListener("click", refreshPool);
+	refreshPool();
+</script>
 
 <script>
 	// --- 게이트웨이 방어(인증·유량제어) ---

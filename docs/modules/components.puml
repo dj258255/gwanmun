@@ -17,9 +17,10 @@ Container_Boundary("GwanmunApplication.GwanmunApplication_boundary", "GwanmunApp
 
 Rel(GwanmunApplication.GwanmunApplication.webREST조립, GwanmunApplication.GwanmunApplication.gateway관문필터체인, "uses", $techn="", $tags="", $link="")
 Rel(GwanmunApplication.GwanmunApplication.webREST조립, GwanmunApplication.GwanmunApplication.message전문코덱, "uses", $techn="", $tags="", $link="")
+Rel(GwanmunApplication.GwanmunApplication.webREST조립, GwanmunApplication.GwanmunApplication.core계정계연동, "uses", $techn="", $tags="", $link="")
+Rel(GwanmunApplication.GwanmunApplication.core계정계연동, GwanmunApplication.GwanmunApplication.message전문코덱, "depends on", $techn="", $tags="", $link="")
 Rel(GwanmunApplication.GwanmunApplication.gateway관문필터체인, GwanmunApplication.GwanmunApplication.message전문코덱, "depends on", $techn="", $tags="", $link="")
 Rel(GwanmunApplication.GwanmunApplication.gateway관문필터체인, GwanmunApplication.GwanmunApplication.core계정계연동, "uses", $techn="", $tags="", $link="")
-Rel(GwanmunApplication.GwanmunApplication.core계정계연동, GwanmunApplication.GwanmunApplication.message전문코덱, "depends on", $techn="", $tags="", $link="")
 
 SHOW_LEGEND(true)
 @enduml

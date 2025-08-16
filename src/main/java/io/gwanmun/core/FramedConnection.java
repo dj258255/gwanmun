@@ -1,6 +1,5 @@
 package io.gwanmun.core;
 
-import java.io.Closeable;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -18,7 +17,7 @@ import java.net.Socket;
  * <p>read 버퍼를 일부러 작게(64byte) 잡았다. "고정 61byte 전문"조차 한 번의 read로 다
  * 안 온다는 것을 코드가 구조적으로 다루게 하기 위함이다(운에 기대지 않는다).
  */
-public final class FramedConnection implements Closeable {
+public final class FramedConnection implements PoolableConnection {
 
 	/** 한 번의 소켓 read로 받는 조각 크기. 전문 길이보다 작게 두어 partial read를 정상 경로로 만든다. */
 	private static final int CHUNK = 64;
@@ -71,6 +70,15 @@ public final class FramedConnection implements Closeable {
 	public void writeFrame(byte[] frame) throws IOException {
 		out.write(frame);
 		out.flush();
+	}
+
+	/** 유휴로 풀에 놓였던 소켓이 그새 죽지 않았는지(재사용 가능 여부). */
+	@Override
+	public boolean isValid() {
+		return !socket.isClosed()
+				&& socket.isConnected()
+				&& !socket.isInputShutdown()
+				&& !socket.isOutputShutdown();
 	}
 
 	@Override

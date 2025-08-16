@@ -7,7 +7,10 @@
 
 * `i.g.w.GatewayController`
 * `i.g.w.MessageController`
+* `i.g.w.TransactionHistoryController`
 |Bean references
 |* `i.g.g.GatewayService` (in gateway · 관문(필터 체인))
 * `i.g.m.MessageRegistry` (in message · 전문 코덱)
+* `i.g.c.TransactionHistoryClient` (in core · 계정계 연동)
+* `i.g.c.CoreBankingClient` (in core · 계정계 연동)
 |===
