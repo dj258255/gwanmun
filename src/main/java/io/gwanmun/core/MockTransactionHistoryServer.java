@@ -1,5 +1,6 @@
 package io.gwanmun.core;
 
+import io.gwanmun.message.AccountMasker;
 import io.gwanmun.message.MessageCodec;
 import io.gwanmun.message.VariableMessageCodec;
 import io.gwanmun.message.dto.TransactionHistoryHeader;
@@ -118,7 +119,9 @@ public final class MockTransactionHistoryServer implements Closeable {
 		TransactionHistoryRequest req = codec.parse(requestBody, TransactionHistoryRequest.class);
 		String accountNo = req.getAccountNo();
 		int requested = clampCount(req.getReqCount());
-		log.info("거래내역 요청 수신: 계좌={} 요청건수={} ({}byte)", accountNo, requested, requestBody.length);
+		// 내장 모드에서는 앱 로그에 섞이므로 여기서도 계좌를 마스킹한다.
+		log.info("거래내역 요청 수신: 계좌={} 요청건수={} ({}byte)",
+				AccountMasker.mask(accountNo), requested, requestBody.length);
 
 		List<TransactionRecord> records = synthesize(accountNo, requested);
 
@@ -130,7 +133,8 @@ public final class MockTransactionHistoryServer implements Closeable {
 				RESPONSE_MESSAGE_TYPE, accountNo,
 				Integer.toString(records.size()), Integer.toString(totalLength), OK_CODE);
 
-		log.info("거래내역 응답 생성: 계좌={} 건수={} 본문={}byte", accountNo, records.size(), totalLength);
+		log.info("거래내역 응답 생성: 계좌={} 건수={} 본문={}byte",
+				AccountMasker.mask(accountNo), records.size(), totalLength);
 		return variableCodec.build(header, records);
 	}
 

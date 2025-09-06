@@ -1,5 +1,6 @@
 package io.gwanmun.core;
 
+import io.gwanmun.message.AccountMasker;
 import io.gwanmun.message.MessageCodec;
 import io.gwanmun.message.dto.BalanceInquiryRequest;
 import io.gwanmun.message.dto.BalanceInquiryResponse;
@@ -41,7 +42,16 @@ public final class MockCoreBankingServer implements Closeable {
 	// 응답메시지 필드는 20byte(한글 10자). EUC-KR로 20byte를 넘지 않는 문구여야 한다.
 	private static final String NOT_FOUND_MESSAGE = "없는 계좌입니다";
 
+	/**
+	 * 응답 지연 모드 계좌(Phase 5). 이 계좌로 요청이 오면 응답을 {@code delayMillis}만큼 늦게 보내
+	 * 게이트웨이 쪽 read 타임아웃을 유발한다 — "요청은 계정계에 도달해 처리됐지만 게이트웨이는 응답을
+	 * 못 받은" 상황, 즉 원장의 <b>UNKNOWN</b>을 재현하는 장치다.
+	 */
+	public static final String DELAY_ACCOUNT = "99999999999999";
+	private static final long DEFAULT_DELAY_MILLIS = 5000;
+
 	private final int requestedPort;
+	private final long delayMillis;
 	private final MessageCodec codec = new MessageCodec();
 	private final ExecutorService workers = Executors.newCachedThreadPool(r -> {
 		Thread t = new Thread(r, "core-worker");
@@ -55,7 +65,13 @@ public final class MockCoreBankingServer implements Closeable {
 	private Thread acceptThread;
 
 	public MockCoreBankingServer(int port) {
+		this(port, DEFAULT_DELAY_MILLIS);
+	}
+
+	/** 테스트용: 지연 모드 대기 시간을 짧게 조절할 수 있다. */
+	public MockCoreBankingServer(int port, long delayMillis) {
 		this.requestedPort = port;
+		this.delayMillis = delayMillis;
 	}
 
 	/** 서버 소켓을 열고 accept 루프를 시작한다. port=0 이면 임의의 빈 포트에 바인딩된다. */
@@ -116,7 +132,19 @@ public final class MockCoreBankingServer implements Closeable {
 	private BalanceInquiryResponse process(byte[] requestFrame) {
 		BalanceInquiryRequest req = codec.parse(requestFrame, BalanceInquiryRequest.class);
 		String accountNo = req.getAccountNo();
-		log.info("요청 수신: 계좌={} 거래={} ({}byte)", accountNo, req.getTxCode(), requestFrame.length);
+		// 내장 모드에서는 앱 로그에 섞이므로 여기서도 계좌를 마스킹한다.
+		log.info("요청 수신: 계좌={} 거래={} ({}byte)",
+				AccountMasker.mask(accountNo), req.getTxCode(), requestFrame.length);
+
+		if (DELAY_ACCOUNT.equals(accountNo)) {
+			// 지연 모드: 요청은 정상 수신·처리하되 응답만 늦게 보낸다(게이트웨이 타임아웃 → UNKNOWN 유발).
+			log.info("지연 모드 계좌 — 응답을 {}ms 늦춥니다(게이트웨이 타임아웃 유발용)", delayMillis);
+			try {
+				Thread.sleep(delayMillis);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+		}
 
 		long value;
 		try {
@@ -132,7 +160,7 @@ public final class MockCoreBankingServer implements Closeable {
 		}
 
 		long balance = fakeBalance(accountNo);
-		log.info("응답 생성: 계좌={} 잔액={}원", accountNo, balance);
+		log.info("응답 생성: 계좌={} 잔액={}원", AccountMasker.mask(accountNo), balance);
 		return new BalanceInquiryResponse(
 				RESPONSE_MESSAGE_TYPE, accountNo, req.getTxCode(),
 				Long.toString(balance), OK_CODE, OK_MESSAGE);

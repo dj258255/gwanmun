@@ -129,6 +129,9 @@
 		.bar .seg-active { background: var(--accent); }
 		.bar .seg-idle { background: var(--ok); }
 		.bar-legend { font-size: 11px; color: var(--muted); margin-top: 4px; }
+		.st-success { color: var(--ok); font-weight: 700; }
+		.st-failed { color: var(--err); font-weight: 700; }
+		.st-unknown { color: #ffc04a; font-weight: 700; }
 	</style>
 </head>
 <body>
@@ -323,6 +326,105 @@
 		</div>
 	</section>
 </div>
+
+<!-- 아래: 거래 원장 (Phase 5 — 3값 상태 SUCCESS/FAILED/UNKNOWN) -->
+<div class="gateway-wrap">
+	<section class="gateway">
+		<h2>7) 거래 원장 (거래ID 채번 · 3값 상태 · 마스킹)</h2>
+		<p class="sub">
+			게이트웨이를 지나간 모든 거래에 <b>거래고유번호</b>(GWMN+U+날짜+일련번호)를 채번하고,
+			결과를 <b>3값 상태</b>로 원장에 비동기 적재합니다 —
+			<span class="st-success">SUCCESS</span>(정상 응답) ·
+			<span class="st-failed">FAILED</span>(오류 응답·입력 오류) ·
+			<span class="st-unknown">UNKNOWN</span>(<b>타임아웃 등 응답을 못 받음</b> — 임의로 실패 처리하지
+			않습니다). 계좌번호는 저장 직전 마스킹(앞6+뒤4만 노출)됩니다.
+		</p>
+
+		<div class="gw-row">
+			<button id="ledgerOkBtn">정상 거래 전송</button>
+			<button id="ledgerBadBtn" style="background:var(--panel-2);">없는 계좌 전송 (FAILED)</button>
+			<button id="ledgerSlowBtn" style="background:var(--panel-2);">지연 계좌 전송 (타임아웃 → UNKNOWN)</button>
+			<button id="ledgerRefreshBtn" style="background:var(--panel-2);">원장 새로고침</button>
+		</div>
+		<p class="sub" style="margin-top:8px;">
+			지연 계좌 <code>99999999999999</code>는 목업 계정계가 응답을 5초 늦춰 read 타임아웃(3초)을
+			일으킵니다 — 요청은 계정계에 <b>도달해 처리</b>됐지만 게이트웨이는 응답을 못 받은 상황.
+		</p>
+
+		<div class="pool-grid" id="ledgerSummary" style="grid-template-columns: repeat(4, 1fr); margin-top:14px;">
+			<div class="pool-cell"><div class="k">SUCCESS</div><div class="v ok" id="lsSuccess">-</div></div>
+			<div class="pool-cell"><div class="k">FAILED</div><div class="v" id="lsFailed" style="color:var(--err)">-</div></div>
+			<div class="pool-cell"><div class="k">UNKNOWN</div><div class="v re" id="lsUnknown">-</div></div>
+			<div class="pool-cell"><div class="k">전체</div><div class="v" id="lsTotal">-</div></div>
+		</div>
+
+		<div class="gw-grid">
+			<div class="full">
+				<p class="step-label">최근 거래 (최신 먼저 · 계좌는 마스킹 저장분 그대로)</p>
+				<div id="ledgerOut" class="out" style="white-space:normal;">아직 조회 전입니다. 위 버튼으로 거래를 만들어 보세요.</div>
+			</div>
+		</div>
+	</section>
+</div>
+
+<script>
+	// --- 거래 원장 (Phase 5) ---
+	const ST_CLASS = { SUCCESS: "st-success", FAILED: "st-failed", UNKNOWN: "st-unknown" };
+
+	async function refreshLedger() {
+		const [recentRes, summaryRes] = await Promise.all([
+			fetch("/api/ledger/recent?limit=12"), fetch("/api/ledger/summary")
+		]);
+		const recent = await recentRes.json();
+		const summary = await summaryRes.json();
+		document.getElementById("lsSuccess").textContent = summary.SUCCESS;
+		document.getElementById("lsFailed").textContent = summary.FAILED;
+		document.getElementById("lsUnknown").textContent = summary.UNKNOWN;
+		document.getElementById("lsTotal").textContent = summary.TOTAL;
+
+		if (!recent.length) {
+			document.getElementById("ledgerOut").textContent = "원장이 비어 있습니다.";
+			return;
+		}
+		let rows = '<table class="rec" style="margin-top:0;"><thead><tr>'
+			+ '<th class="txt">거래ID</th><th class="txt">코드</th><th class="txt">상태</th>'
+			+ '<th>소요ms</th><th class="txt">계좌(마스킹)</th><th class="txt">응답코드</th><th class="txt">correlation</th>'
+			+ '</tr></thead><tbody>';
+		for (const e of recent) {
+			rows += '<tr>'
+				+ '<td class="txt" style="font-family:var(--mono);">' + e.transactionId + '</td>'
+				+ '<td class="txt">' + e.txCode + '</td>'
+				+ '<td class="txt ' + (ST_CLASS[e.status] || '') + '">' + e.status + '</td>'
+				+ '<td>' + e.elapsedMs + '</td>'
+				+ '<td class="txt" style="font-family:var(--mono);">' + e.accountMasked + '</td>'
+				+ '<td class="txt">' + (e.responseCode || '-') + '</td>'
+				+ '<td class="txt" style="font-family:var(--mono);">' + (e.correlationId || '-') + '</td>'
+				+ '</tr>';
+		}
+		rows += '</tbody></table>';
+		document.getElementById("ledgerOut").innerHTML = rows;
+	}
+
+	async function ledgerSend(accountNo, label) {
+		const out = document.getElementById("ledgerOut");
+		out.textContent = label + " 전송 중... (지연 계좌는 타임아웃 3초까지 기다립니다)";
+		try {
+			await fetch("/api/gateway/balance", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "X-API-Key": "demo-key-fintech-a" },
+				body: JSON.stringify({ accountNo })
+			});
+		} catch (e) { /* 원장에는 이미 적혔다 — 아래 새로고침으로 확인 */ }
+		// 적재는 비동기라 한 박자 뒤에 새로고침한다.
+		setTimeout(refreshLedger, 400);
+	}
+
+	document.getElementById("ledgerOkBtn").addEventListener("click", () => ledgerSend("12345678901234", "정상 거래"));
+	document.getElementById("ledgerBadBtn").addEventListener("click", () => ledgerSend("0", "없는 계좌"));
+	document.getElementById("ledgerSlowBtn").addEventListener("click", () => ledgerSend("99999999999999", "지연 계좌"));
+	document.getElementById("ledgerRefreshBtn").addEventListener("click", refreshLedger);
+	refreshLedger();
+</script>
 
 <script>
 	// --- 가변 전문 왕복 (거래내역 조회) ---

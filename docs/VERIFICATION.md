@@ -287,3 +287,144 @@ puppeteer-core 헤드리스 크롬 라이브 캡처(가짜 UI 아님).
 - 길이 헤더는 4byte ASCII 십진수 한 종류(본문 최대 9999byte). 2/4byte 바이너리 헤더는 확장 지점.
 - 풀은 최소 기능(최대 크기·유휴 반납·검증·고갈 거절). 유휴 최대 생존·주기 헬스체크·warm pool·누수 감지 없음.
 - 파이프라이닝 없음(요청→응답 완료 후 다음). 가변 전문은 대표 한 종(중첩 가변·선택 필드 제외).
+
+---
+
+## Phase 5 — 관측 가능한 거래 원장 (거래ID 채번 · 3값 상태 · 마스킹 · 메트릭)
+
+Phase 4까지의 게이트웨이는 거래를 흘려보내기만 하고 아무것도 기억하지 못했다. Phase 5는 모든 거래에
+거래고유번호를 채번하고, 결과를 3값 상태(SUCCESS/FAILED/UNKNOWN)로 원장(DB)에 비동기 적재한다.
+핵심 규칙: **타임아웃 등 응답을 못 받은 거래는 임의로 실패 처리하지 않고 UNKNOWN으로 적는다.**
+
+### 검증 환경
+
+```
+docker compose up -d        # 원장 DB: PostgreSQL 16 (호스트 포트 25432)
+java -jar build/libs/gwanmun-0.1.0.jar --spring.profiles.active=postgres
+```
+
+- 앱 8090 + 내장 목업 계정계(9099·9098). 원장은 PostgreSQL 컨테이너에 적재(로컬 개발·테스트는 H2).
+- 목업 잔액조회 계정계에 지연 모드 추가: 계좌 `99999999999999`면 응답을 5초 늦춘다
+  (read 타임아웃 3초 < 5초 → 반드시 타임아웃).
+
+### 1) 3값 상태 — 셋 다 실제로 기록 (curl 실제 출력)
+
+**(a) 정상 거래 → SUCCESS** (거래ID가 응답에 노출)
+
+```
+POST /api/gateway/balance {"accountNo":"12345678901234"}   (X-Correlation-Id: demo-cid-success-1)
+HTTP/1.1 200
+X-Correlation-Id: demo-cid-success-1
+{"transactionId":"GWMNU20260709105002301","ledgerStatus":"SUCCESS", ..., "elapsedMs":2}
+```
+
+**(b) 없는 계좌 → FAILED** (응답은 받았고 오류 코드 0001 — UNKNOWN이 아니다)
+
+```
+POST /api/gateway/balance {"accountNo":"0"}
+HTTP/1.1 200
+{"transactionId":"GWMNU20260709105002302","ledgerStatus":"FAILED",
+ "json":{"responseCode":"0001","responseMessage":"없는 계좌입니다"}}
+```
+
+**(c) 지연 계좌 → 타임아웃 → UNKNOWN** (3.06초 소요 = read 타임아웃 3000ms에서 포기, HTTP 504)
+
+```
+POST /api/gateway/balance {"accountNo":"99999999999999"}   (X-Correlation-Id: demo-cid-timeout-1)
+HTTP/1.1 504
+X-Correlation-Id: demo-cid-timeout-1
+{"error":"계정계(127.0.0.1:9099) 통신 실패: Read timed out",
+ "transactionId":"GWMNU20260709105002303","ledgerStatus":"UNKNOWN"}
+```
+
+계정계(목업) 로그에는 요청이 도달해 처리된 흔적이 남는다 — "실패"라고 단정하면 틀리는 상황이다:
+
+```
+io.gwanmun.core.MockCoreBankingServer : 지연 모드 계좌 — 응답을 5000ms 늦춥니다(게이트웨이 타임아웃 유발용)
+```
+
+### 2) 원장 DB 실체 — PostgreSQL 행 (psql 실제 출력)
+
+```
+gwanmun=# SELECT transaction_id, status, response_code, elapsed_ms, detail
+          FROM transaction_ledger WHERE status <> 'SUCCESS' ORDER BY id;
+     transaction_id     | status  | response_code | elapsed_ms |                      detail
+------------------------+---------+---------------+------------+--------------------------------------------------
+ GWMNU20260709105002302 | FAILED  | 0001          |          0 | 없는 계좌입니다
+ GWMNU20260709105002303 | UNKNOWN |               |       3011 | 계정계(127.0.0.1:9099) 통신 실패: Read timed out
+```
+
+- UNKNOWN 행의 `response_code`가 비어 있다 — 응답 자체를 못 받았다는 정직한 기록.
+- `account_masked` 컬럼은 `123456****1234` 형태만 저장(마스킹 규칙: 앞6+뒤4만 노출). 원문 없음.
+- 적재는 비동기(전용 스레드 + 유한 큐)라 거래 지연을 만들지 않고, DB가 죽어도 거래는 진행(WARN만).
+
+### 3) correlation ID — 모든 로그 라인 + 응답 헤더 + 원장
+
+수신 헤더 `X-Correlation-Id`가 있으면 승계, 없으면 생성해 MDC에 넣는다. 로그 패턴이 전 라인에 찍는다
+(앱 로그 실제 출력 — 계좌도 마스킹돼 있다):
+
+```
+... [cid:demo-cid-success-1] io.gwanmun.gateway.GatewayService : 게이트웨이 왕복 완료: 계좌=123456****1234 응답코드=0000 잔액=6879445000 (2ms)
+... [cid:c1d066748a7944d7] io.gwanmun.gateway.GatewayService : 게이트웨이 왕복 완료: 계좌=* 응답코드=0001 잔액=0 (0ms)
+```
+
+원장에도 같은 correlation ID가 저장돼, "이 504가 어느 요청이었나"를 앱 로그↔원장↔호출자 사이에서
+한 줄로 꿸 수 있다.
+
+### 4) 커스텀 메트릭 — /actuator/prometheus (실제 출력)
+
+429를 2건 유발(fintech-b로 7연속)한 직후의 자체 구현물 메트릭:
+
+```
+gwanmun_core_roundtrip_seconds_count{tx="balance"} 7
+gwanmun_ledger_transactions_total{status="FAILED"} 1.0
+gwanmun_ledger_transactions_total{status="SUCCESS"} 7.0
+gwanmun_ledger_transactions_total{status="UNKNOWN"} 1.0
+gwanmun_pool_active{pool="core-banking"} 0.0
+gwanmun_pool_idle{pool="core-banking"} 1.0
+gwanmun_pool_opened_total{pool="core-banking"} 2.0
+gwanmun_pool_reused_total{pool="core-banking"} 6.0
+gwanmun_pool_destroyed_total{pool="core-banking"} 1.0
+gwanmun_ratelimit_consumed_total{client="fintech-b"} 5.0
+gwanmun_ratelimit_rejected_total{client="fintech-b"} 2.0
+```
+
+- `destroyed_total=1` — 타임아웃 난 소켓을 풀이 폐기한 것까지 메트릭에 드러난다.
+- `opened_total=2, reused_total=6` — 소켓 2개로 8왕복(풀 재사용).
+- 헬스는 liveness/readiness 분리: `/actuator/health/liveness`·`/actuator/health/readiness` 각각 UP.
+- 종료는 graceful: SIGTERM 시 "Commencing graceful shutdown → complete" 후 풀·원장 스레드 정리(실측).
+
+### 5) 화면
+
+`docs/images/transaction-ledger.png` — 상태별 카운트(SUCCESS 7 · FAILED 1 · UNKNOWN 1)와 최근 거래 표
+(거래ID·코드·3값 상태 색상·소요ms·마스킹된 계좌·correlation ID). UNKNOWN 행의 소요 3011ms가
+타임아웃(3초)의 흔적이다. puppeteer-core 헤드리스 크롬 라이브 캡처(가짜 UI 아님).
+
+### 6) 테스트
+
+```
+./gradlew test   # 104개 통과 (Phase 1~4: 80 + Phase 5: 24)
+```
+
+- `TransactionIdGeneratorTest` (3) — 형식(GWMN+U+날짜8+일련번호9), 16스레드×2000 동시 채번 무충돌,
+  재기동 시드가 이전 발급 구간을 앞지름(주입 시계).
+- `TransactionStatusTest` (6) — 0000→SUCCESS, 오류코드→FAILED, 타임아웃(중첩 포함)→UNKNOWN,
+  EOF→UNKNOWN, 연결 거부→FAILED, null→FAILED.
+- `TimeoutClassificationTest` (2) — 지연 모드 목업 + 짧은 read 타임아웃으로 **진짜 소켓 타임아웃**을
+  일으켜 UNKNOWN 판정, 같은 서버의 일반 계좌는 정상.
+- `AccountMaskerTest` (6) — 앞6+뒤4 규칙, 짧은 입력 보수적 마스킹, null 안전.
+- `TransactionLedgerTest` (2) — 저장 직전 마스킹(원문 미영속), save가 예외를 던져도 record()는 안 던짐
+  (적재 실패가 거래를 안 막음).
+- `LedgerApiIntegrationTest` (5) — 실제 HTTP→소켓→비동기 적재 전 구간: SUCCESS/FAILED 기록,
+  correlation ID 승계·생성, 프로메테우스 커스텀 메트릭, liveness/readiness.
+- `ModularityTest.verify()` 계속 그린 — 새 `ledger` 모듈 포함 5모듈 단방향 DAG
+  (web → gateway·message·core·ledger, ledger → message). Documenter 다이어그램 갱신.
+
+### 잔여 (정직하게 안 함)
+
+- **UNKNOWN 해소 없음**: 기록까지다. 망취소(취소 전문)·거래 상태 조회(대사)로 UNKNOWN을 확정 짓는
+  흐름은 다음 단계.
+- **멱등키 없음**: 같은 요청의 재시도를 게이트웨이가 구분하지 못한다(호출자가 거래ID를 들고 문의는
+  가능하지만, 중복 실행 방지는 안 된다).
+- **채번은 단일 노드 전제**: 다중 인스턴스면 노드 식별자나 중앙 채번이 필요.
+- **JWT/OAuth 여전히 미구현**(Phase 3 잔여 그대로), 원장 보존 기한·파티셔닝·감사 추적(변경 이력) 없음.

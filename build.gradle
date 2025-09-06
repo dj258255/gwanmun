@@ -31,6 +31,15 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-web'
 	// DTO ↔ JSON 브릿지 (Jackson은 web 스타터가 물고 온다. 명시적 의존은 두지 않는다.)
 
+	// Phase 5 거래 원장 — 거래 로그를 DB에 적재한다(로컬/테스트는 H2, 운영 데모는 PostgreSQL 컨테이너).
+	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	runtimeOnly 'com.h2database:h2'
+	runtimeOnly 'org.postgresql:postgresql'
+
+	// Phase 5 관측 — 헬스(liveness/readiness 분리)와 커스텀 메트릭(/actuator/prometheus).
+	implementation 'org.springframework.boot:spring-boot-starter-actuator'
+	runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+
 	// 모듈러 모놀리스: io.gwanmun 하위 각 패키지를 애플리케이션 모듈로 인식하게 한다.
 	implementation 'org.springframework.modulith:spring-modulith-starter-core'
 	// ApplicationModules.verify()로 모듈 경계를 테스트에서 강제한다.

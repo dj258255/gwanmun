@@ -1,10 +1,40 @@
 server:
   # 기본 8080은 다른 프로세스가 점유할 수 있어 8090으로 고정한다.
   port: 8090
+  # Phase 5: 종료 신호를 받으면 처리 중인 요청을 마저 끝내고 닫는다(원장 적재·풀 정리와 한 세트).
+  shutdown: graceful
 
 spring:
   application:
     name: gwanmun
+  lifecycle:
+    # graceful shutdown이 처리 중 요청을 기다려 주는 상한.
+    timeout-per-shutdown-phase: 10s
+  # Phase 5 거래 원장 저장소. 기본은 H2 인메모리(로컬 개발·테스트가 DB 없이 돌게),
+  # 운영 데모는 postgres 프로파일(docker compose up 후 --spring.profiles.active=postgres).
+  datasource:
+    url: jdbc:h2:mem:gwanmun;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    # 뷰 렌더링까지 영속 컨텍스트를 끌고 갈 이유가 없다(REST 전용).
+    open-in-view: false
+
+# Phase 5 관측 — 헬스(liveness/readiness 분리)와 Prometheus 스크레이프 지점.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # /actuator/health/liveness · /actuator/health/readiness 를 분리 노출한다.
+      probes:
+        enabled: true
+      show-details: always
 
 # 목업 계정계(코어뱅킹) TCP 연동 설정.
 gwanmun:
@@ -39,3 +69,18 @@ gwanmun:
 logging:
   level:
     io.gwanmun: INFO
+  pattern:
+    # Phase 5: 모든 로그 라인에 correlation ID를 자동으로 찍는다(CorrelationIdFilter가 MDC에 넣는다).
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSS} %5p --- [%15.15t] [cid:%X{correlationId:-}] %-40.40logger{39} : %m%n"
+
+---
+# 운영 데모 프로파일 — 거래 원장을 PostgreSQL 컨테이너(docker-compose.yml, 호스트 포트 25432)에 적재.
+spring:
+  config:
+    activate:
+      on-profile: postgres
+  datasource:
+    url: jdbc:postgresql://127.0.0.1:25432/gwanmun
+    username: gwanmun
+    password: gwanmun
+    driver-class-name: org.postgresql.Driver

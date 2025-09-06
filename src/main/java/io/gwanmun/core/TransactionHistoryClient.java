@@ -1,5 +1,6 @@
 package io.gwanmun.core;
 
+import io.gwanmun.message.AccountMasker;
 import io.gwanmun.message.MessageCodec;
 import io.gwanmun.message.VariableMessageCodec;
 import io.gwanmun.message.VariableMessageCodec.VariableMessage;
@@ -120,8 +121,9 @@ public class TransactionHistoryClient implements Closeable {
 		}
 
 		byte[] responseWire = LengthPrefixedFramer.encode(responseBody);
+		// 앱 로그에도 계좌 원문을 남기지 않는다(마스킹 규칙: 앞6+뒤4만 노출).
 		log.info("거래내역 조회 완료: 계좌={} 건수={} 본문={}byte 재사용={}회 ({}ms)",
-				accountNo, parsed.records().size(), responseBody.length, reuseCount, elapsedMs);
+				AccountMasker.mask(accountNo), parsed.records().size(), responseBody.length, reuseCount, elapsedMs);
 
 		return new HistoryResult(requestWire, responseWire, parsed.header(), parsed.records(),
 				host, port, elapsedMs, reuseCount);

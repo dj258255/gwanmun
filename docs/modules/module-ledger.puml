@@ -1,0 +1,19 @@
+@startuml
+set separator none
+title ledger · 거래 원장
+
+top to bottom direction
+
+!include <C4/C4>
+!include <C4/C4_Context>
+!include <C4/C4_Component>
+
+Container_Boundary("GwanmunApplication.GwanmunApplication_boundary", "GwanmunApplication", $tags="") {
+  Component(GwanmunApplication.GwanmunApplication.ledger거래원장, "ledger · 거래 원장", $techn="Module", $descr="", $tags="", $link="")
+  Component(GwanmunApplication.GwanmunApplication.message전문코덱, "message · 전문 코덱", $techn="Module", $descr="", $tags="", $link="")
+}
+
+Rel(GwanmunApplication.GwanmunApplication.ledger거래원장, GwanmunApplication.GwanmunApplication.message전문코덱, "depends on", $techn="", $tags="", $link="")
+
+SHOW_LEGEND(true)
+@enduml

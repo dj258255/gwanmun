@@ -3,7 +3,8 @@
 |Base package
 |`io.gwanmun.core`
 |Spring components
-|* `i.g.c.CoreBankingClient`
+|* `i.g.c.ConnectionPoolMetrics`
+* `i.g.c.CoreBankingClient`
 * `i.g.c.MockCoreBankingLifecycle`
 * `i.g.c.MockTransactionHistoryLifecycle`
 * `i.g.c.TransactionHistoryClient`

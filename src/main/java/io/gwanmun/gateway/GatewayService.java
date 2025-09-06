@@ -1,5 +1,6 @@
 package io.gwanmun.gateway;
 
+import io.gwanmun.message.AccountMasker;
 import io.gwanmun.message.MessageCodec;
 import io.gwanmun.message.dto.BalanceInquiryRequest;
 import io.gwanmun.message.dto.BalanceInquiryResponse;
@@ -57,8 +58,9 @@ public class GatewayService {
 		long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 
 		BalanceInquiryResponse response = codec.parse(responseFrame, BalanceInquiryResponse.class);
+		// 앱 로그에도 계좌 원문을 남기지 않는다(마스킹 규칙: 앞6+뒤4만 노출).
 		log.info("게이트웨이 왕복 완료: 계좌={} 응답코드={} 잔액={} ({}ms)",
-				accountNo, response.getResponseCode(), response.getBalance(), elapsedMs);
+				AccountMasker.mask(accountNo), response.getResponseCode(), response.getBalance(), elapsedMs);
 
 		return new GatewayResult(requestFrame, responseFrame, response,
 				client.host(), client.port(), elapsedMs);

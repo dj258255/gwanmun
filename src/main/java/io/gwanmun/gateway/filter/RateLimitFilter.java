@@ -1,6 +1,8 @@
 package io.gwanmun.gateway.filter;
 
 import io.gwanmun.gateway.GatewayProperties;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -23,17 +25,25 @@ public class RateLimitFilter implements GatewayFilter {
 	private final double capacity;
 	private final double refillPerSecond;
 	private final LongSupplier clock;
+	private final MeterRegistry meterRegistry;
 
 	@Autowired
-	public RateLimitFilter(GatewayProperties props) {
-		this(props.getRateCapacity(), props.getRateRefillPerMinute() / 60.0, System::nanoTime);
+	public RateLimitFilter(GatewayProperties props, MeterRegistry meterRegistry) {
+		this(props.getRateCapacity(), props.getRateRefillPerMinute() / 60.0, System::nanoTime,
+				meterRegistry);
 	}
 
 	/** 테스트용: 용량·초당 보충·시계를 직접 주입한다(가짜 시계로 시간을 흘려 검증). */
 	public RateLimitFilter(double capacity, double refillPerSecond, LongSupplier clock) {
+		this(capacity, refillPerSecond, clock, new SimpleMeterRegistry());
+	}
+
+	public RateLimitFilter(double capacity, double refillPerSecond, LongSupplier clock,
+			MeterRegistry meterRegistry) {
 		this.capacity = capacity;
 		this.refillPerSecond = refillPerSecond;
 		this.clock = clock;
+		this.meterRegistry = meterRegistry;
 	}
 
 	@Override
@@ -43,11 +53,15 @@ public class RateLimitFilter implements GatewayFilter {
 				k -> new TokenBucket(capacity, refillPerSecond, clock));
 
 		if (bucket.tryConsume()) {
+			// 커스텀 메트릭: 토큰 소비(통과) 카운터 — 클라이언트별.
+			meterRegistry.counter("gwanmun.ratelimit.consumed", "client", clientId).increment();
 			response.header("X-RateLimit-Remaining", Long.toString(bucket.remaining()));
 			chain.next(request, response);
 			return;
 		}
 
+		// 커스텀 메트릭: 토큰 거절(429) 카운터 — 유량제어가 실제로 얼마나 끊고 있는지.
+		meterRegistry.counter("gwanmun.ratelimit.rejected", "client", clientId).increment();
 		long retryMs = bucket.millisUntilRefill();
 		long retrySec = Math.max(1, (long) Math.ceil(retryMs / 1000.0));
 		response.header("Retry-After", Long.toString(retrySec)); // 초 단위(HTTP 관례).

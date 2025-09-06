@@ -31,6 +31,11 @@ hex(EUC-KR 한글 포함), 최종 JSON까지. 아래 hex는 실제로 소켓을 
 
 ![가변 전문 왕복 + 커넥션 풀 상태](docs/images/variable-length-demo.png)
 
+거래 원장 — 모든 거래에 거래고유번호를 채번하고 3값 상태(SUCCESS/FAILED/**UNKNOWN**)로 적재.
+타임아웃은 실패가 아니라 미확인이다(임의로 실패 처리하지 않는다). 계좌는 마스킹 저장:
+
+![거래 원장 — 거래ID 채번, 3값 상태, 마스킹된 계좌, correlation ID](docs/images/transaction-ledger.png)
+
 ## 스택
 
 | 층 | 도구 |
@@ -39,7 +44,8 @@ hex(EUC-KR 한글 포함), 최종 JSON까지. 아래 hex는 실제로 소켓을 
 | 연계 통역 | Java 21 — 전문 스펙(어노테이션) ↔ byte[] ↔ DTO ↔ JSON 코덱 |
 | 통신 | java.net 소켓(TCP) — 고정길이·길이 프리픽스 프레이밍, partial read 재조립, 커넥션 풀 |
 | 레거시 목업 | 전문을 주고받는 작은 TCP 서버(잔액조회·거래내역) |
-| 구조 | Spring Modulith — message·core·gateway·web 모듈 경계를 코드가 강제(ApplicationModules.verify) |
+| 관측 | 거래 원장(거래ID 채번·3값 상태·비동기 적재 — H2/PostgreSQL) + actuator·Prometheus 커스텀 메트릭 + correlation ID(MDC) |
+| 구조 | Spring Modulith — message·core·gateway·ledger·web 모듈 경계를 코드가 강제(ApplicationModules.verify) |
 
 ## 원칙
 
@@ -53,5 +59,6 @@ hex(EUC-KR 한글 포함), 최종 JSON까지. 아래 hex는 실제로 소켓을 
 - **Phase 2** — TCP 프레이밍(partial read 재조립) + 목업 계정계 + 게이트웨이 왕복(REST→전문→TCP→JSON)
 - **Phase 3** — 필터 체인(인증·라우팅·유량제어) + Spring Modulith 모듈러 모놀리스
 - **Phase 4** — 가변길이 전문(길이 프리픽스 프레이밍) + 커넥션 풀
+- **Phase 5** — 관측 가능한 거래 원장(거래ID 채번, 3값 상태 SUCCESS/FAILED/UNKNOWN, 비동기 적재, 계좌 마스킹) + correlation ID·Prometheus 메트릭·헬스 프로브
 
 각 단계의 함정·판단·검증은 [docs/ROADMAP.md](docs/ROADMAP.md)와 [docs/VERIFICATION.md](docs/VERIFICATION.md)에 있다.

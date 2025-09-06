@@ -2,6 +2,7 @@ package io.gwanmun.gateway;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.autoconfigure.actuate.observability.AutoConfigureObservability;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 
@@ -22,6 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * HttpRetryException을 던지는 오래된 함정이 있어 피한다).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureObservability // LedgerApiIntegrationTest와 같은 컨텍스트를 공유하기 위해(내장 목업 포트 충돌 방지).
 class GatewayGuardIntegrationTest {
 
 	@LocalServerPort

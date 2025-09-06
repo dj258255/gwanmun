@@ -1,0 +1,26 @@
+# gwanmun 거래 원장 저장소 (Phase 5).
+# 로컬 개발·테스트는 H2로 돌고, 이 컨테이너는 "재기동해도 원장이 남는" 운영 데모용이다.
+#   docker compose up -d
+#   java -jar build/libs/gwanmun-0.1.0.jar --spring.profiles.active=postgres
+#
+# 호스트 포트 25432 — 5432(로컬)·15432(다른 스택)와 충돌하지 않게 비어 있는 포트를 골랐다.
+services:
+  ledger-db:
+    image: postgres:16-alpine
+    container_name: gwanmun-ledger-db
+    environment:
+      POSTGRES_DB: gwanmun
+      POSTGRES_USER: gwanmun
+      POSTGRES_PASSWORD: gwanmun
+    ports:
+      - "25432:5432"
+    volumes:
+      - gwanmun-ledger-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gwanmun -d gwanmun"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  gwanmun-ledger-data:
