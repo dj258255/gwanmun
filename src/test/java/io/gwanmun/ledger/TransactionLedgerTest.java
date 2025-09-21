@@ -9,9 +9,11 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.Instant;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -56,5 +58,39 @@ class TransactionLedgerTest {
 		// 거래 스레드가 이 호출에서 죽으면 안 된다 — WARN 로그만 남기고 삼킨다.
 		assertThatCode(() -> ledger.record(sample(TransactionStatus.UNKNOWN)))
 				.doesNotThrowAnyException();
+	}
+
+	@Test
+	@DisplayName("resolve(): UNKNOWN 거래를 CANCELED로 확정하고 해소 시각·방법을 남긴다 (Phase 6)")
+	void resolveConfirmsUnknownTransaction() {
+		LedgerEntry unknown = new LedgerEntry("GWMNU20260709000000002", "IN01", "123456****1234",
+				TransactionStatus.UNKNOWN, null, "Read timed out",
+				Instant.now(), Instant.now(), 3011, "cid-test-0002");
+		when(repository.findByTransactionId("GWMNU20260709000000002"))
+				.thenReturn(Optional.of(unknown));
+		when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+		var view = ledger.resolve("GWMNU20260709000000002", TransactionStatus.CANCELED,
+				"NET_CANCEL", "상태조회 처리됨 → 망취소 성공");
+
+		assertThat(view.status()).isEqualTo(TransactionStatus.CANCELED);
+		assertThat(view.resolutionMethod()).isEqualTo("NET_CANCEL");
+		assertThat(view.resolvedAt()).isNotNull();
+		assertThat(unknown.getStatus()).isEqualTo(TransactionStatus.CANCELED);
+	}
+
+	@Test
+	@DisplayName("resolve(): UNKNOWN이 아닌 거래는 건드리지 않는다 — IllegalStateException")
+	void resolveRejectsNonUnknown() {
+		LedgerEntry success = new LedgerEntry("GWMNU20260709000000003", "IN01", "123456****1234",
+				TransactionStatus.SUCCESS, "0000", null,
+				Instant.now(), Instant.now(), 3, "cid-test-0003");
+		when(repository.findByTransactionId("GWMNU20260709000000003"))
+				.thenReturn(Optional.of(success));
+
+		assertThatThrownBy(() ->
+				ledger.resolve("GWMNU20260709000000003", TransactionStatus.CANCELED, "NET_CANCEL", ""))
+				.isInstanceOf(IllegalStateException.class)
+				.hasMessageContaining("UNKNOWN");
 	}
 }

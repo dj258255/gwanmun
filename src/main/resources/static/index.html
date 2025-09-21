@@ -132,6 +132,19 @@
 		.st-success { color: var(--ok); font-weight: 700; }
 		.st-failed { color: var(--err); font-weight: 700; }
 		.st-unknown { color: #ffc04a; font-weight: 700; }
+		.st-canceled { color: var(--accent); font-weight: 700; }
+		.circuit-chip { display: inline-flex; align-items: center; gap: 8px; background: var(--panel-2);
+			border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; font-family: var(--mono);
+			font-size: 13px; margin-right: 10px; }
+		.circuit-chip .dot { width: 10px; height: 10px; border-radius: 50%; }
+		.circuit-chip.closed .dot { background: var(--ok); }
+		.circuit-chip.open .dot { background: var(--err); }
+		.circuit-chip.half_open .dot { background: #ffc04a; }
+		.circuit-chip.closed .state { color: var(--ok); font-weight: 700; }
+		.circuit-chip.open .state { color: var(--err); font-weight: 700; }
+		.circuit-chip.half_open .state { color: #ffc04a; font-weight: 700; }
+		.circuit-chip .k { color: var(--muted); font-size: 11px; }
+		button.resolve-btn { margin: 0; padding: 4px 10px; font-size: 12px; }
 	</style>
 </head>
 <body>
@@ -196,7 +209,7 @@
 
 		<div class="gw-grid">
 			<div>
-				<p class="step-label">(a) 나간 <b>요청 전문</b> <span class="dir">→ 계정계</span> (30 byte hex)</p>
+				<p class="step-label">(a) 나간 <b>요청 전문</b> <span class="dir">→ 계정계</span> (52 byte hex — 거래고유번호 포함)</p>
 				<div id="gwReq" class="out">전송 전입니다.</div>
 			</div>
 			<div>
@@ -351,10 +364,11 @@
 			일으킵니다 — 요청은 계정계에 <b>도달해 처리</b>됐지만 게이트웨이는 응답을 못 받은 상황.
 		</p>
 
-		<div class="pool-grid" id="ledgerSummary" style="grid-template-columns: repeat(4, 1fr); margin-top:14px;">
+		<div class="pool-grid" id="ledgerSummary" style="grid-template-columns: repeat(5, 1fr); margin-top:14px;">
 			<div class="pool-cell"><div class="k">SUCCESS</div><div class="v ok" id="lsSuccess">-</div></div>
 			<div class="pool-cell"><div class="k">FAILED</div><div class="v" id="lsFailed" style="color:var(--err)">-</div></div>
 			<div class="pool-cell"><div class="k">UNKNOWN</div><div class="v re" id="lsUnknown">-</div></div>
+			<div class="pool-cell"><div class="k">CANCELED</div><div class="v acc" id="lsCanceled">-</div></div>
 			<div class="pool-cell"><div class="k">전체</div><div class="v" id="lsTotal">-</div></div>
 		</div>
 
@@ -367,9 +381,184 @@
 	</section>
 </div>
 
+<!-- 아래: 장애 내성 (Phase 6 — 서킷브레이커 · UNKNOWN 해소) -->
+<div class="gateway-wrap">
+	<section class="gateway">
+		<h2>8) 장애 내성 (서킷브레이커 · UNKNOWN 해소 — 거래상태조회/망취소)</h2>
+		<p class="sub">
+			계정계가 죽으면 서킷이 통로를 끊어 <b>즉시 실패</b>시키고(게이트웨이 보호), 응답을 못 받아
+			<span class="st-unknown">UNKNOWN</span>으로 적힌 거래는 <b>거래상태조회 전문</b>으로 확인해 —
+			계정계가 처리했으면 <b>망취소 전문</b>으로 무효화(<span class="st-canceled">CANCELED</span>),
+			안 받았으면 <span class="st-failed">FAILED</span>로 확정합니다.
+			조회성 거래만 제한 재시도하고, 변경성(망취소)은 재시도하지 않습니다(이중 거래 위험).
+		</p>
+
+		<div id="circuitChips" style="margin: 6px 0 14px;">
+			<span class="circuit-chip closed" id="chipCore"><span class="dot"></span>
+				core-banking <span class="state">-</span>
+				<span class="k">연속실패 <b id="ccFail">-</b> · 열림 <b id="ccOpened">-</b> · 거절 <b id="ccRejected">-</b></span></span>
+			<span class="circuit-chip closed" id="chipHist"><span class="dot"></span>
+				txn-history <span class="state">-</span></span>
+			<button id="circuitRefreshBtn" class="resolve-btn" style="background:var(--panel-2);">서킷 새로고침</button>
+		</div>
+
+		<div class="gw-row">
+			<button id="resSlowBtn" style="background:var(--panel-2);">지연 계좌 → UNKNOWN (계정계는 처리함)</button>
+			<button id="resDropBtn" style="background:var(--panel-2);">유실 계좌 → UNKNOWN (계정계 미처리)</button>
+			<div style="width:110px;">
+				<label for="burstCount">연속 호출 수</label>
+				<input id="burstCount" value="5">
+			</div>
+			<button id="burstBtn">N회 연속 호출 (서킷 관찰 — 계정계를 죽이고 눌러 보세요)</button>
+		</div>
+
+		<div class="gw-grid">
+			<div>
+				<p class="step-label">해소 대상 — <b>UNKNOWN 거래</b> (해소 버튼 = 상태조회 → 망취소)</p>
+				<div id="unknownList" class="out" style="white-space:normal;">아직 조회 전입니다.</div>
+			</div>
+			<div>
+				<p class="step-label">해소 플로우 <span class="dir">(상태조회·망취소 전문 두 다리와 원장 상태 변화)</span></p>
+				<div id="resolveOut" class="out">UNKNOWN 거래를 만들고 해소해 보세요.</div>
+			</div>
+			<div class="full">
+				<p class="step-label">연속 호출 결과 <span class="dir">(계정계를 죽이면: 백엔드 실패 → 임계 도달 → 서킷 OPEN → 즉시 거절)</span></p>
+				<div id="burstOut" class="out">계정계 프로세스를 죽인 뒤 연속 호출로 서킷이 열리는 순간을 봅니다.</div>
+			</div>
+		</div>
+	</section>
+</div>
+
+<script>
+	// --- 장애 내성 (Phase 6): 서킷 상태 + UNKNOWN 해소 ---
+	function applyChip(el, s) {
+		el.classList.remove("closed", "open", "half_open");
+		el.classList.add(s.state.toLowerCase());
+		el.querySelector(".state").textContent = s.state
+			+ (s.state === "OPEN" ? " (탐침까지 " + Math.ceil(s.openRemainingMs / 1000) + "s)" : "");
+	}
+
+	async function refreshCircuit() {
+		const res = await fetch("/api/circuit/stats");
+		const data = await res.json();
+		applyChip(document.getElementById("chipCore"), data.coreBanking);
+		applyChip(document.getElementById("chipHist"), data.txnHistory);
+		document.getElementById("ccFail").textContent = data.coreBanking.consecutiveFailures + "/" + data.coreBanking.failureThreshold;
+		document.getElementById("ccOpened").textContent = data.coreBanking.openedTotal;
+		document.getElementById("ccRejected").textContent = data.coreBanking.rejectedTotal;
+	}
+
+	async function refreshUnknown() {
+		const res = await fetch("/api/ledger/unknown?limit=10");
+		const list = await res.json();
+		const box = document.getElementById("unknownList");
+		if (!list.length) {
+			box.textContent = "UNKNOWN 거래가 없습니다. 위 버튼으로 만들어 보세요.";
+			return;
+		}
+		let rows = '<table class="rec" style="margin-top:0;"><thead><tr>'
+			+ '<th class="txt">거래ID</th><th class="txt">계좌(마스킹)</th><th>소요ms</th><th class="txt"></th>'
+			+ '</tr></thead><tbody>';
+		for (const e of list) {
+			rows += '<tr>'
+				+ '<td class="txt" style="font-family:var(--mono);">' + e.transactionId + '</td>'
+				+ '<td class="txt" style="font-family:var(--mono);">' + e.accountMasked + '</td>'
+				+ '<td>' + e.elapsedMs + '</td>'
+				+ '<td class="txt"><button class="resolve-btn" onclick="resolveTx(\'' + e.transactionId + '\')">해소</button></td>'
+				+ '</tr>';
+		}
+		rows += '</tbody></table>';
+		box.innerHTML = rows;
+	}
+
+	function shortHex(hex) {
+		return hex.length > 40 ? hex.slice(0, 40) + "…" : hex;
+	}
+
+	async function resolveTx(tranId) {
+		const out = document.getElementById("resolveOut");
+		out.textContent = tranId + " 해소 중... (상태조회 전문 발사)";
+		const res = await fetch("/api/gateway/resolve/" + tranId, {
+			method: "POST", headers: { "X-API-Key": "demo-key-fintech-b" }
+		});
+		const d = await res.json();
+		if (!res.ok) {
+			out.innerHTML = '<span class="err">해소 실패(' + res.status + '): ' + (d.error || '') + '</span>';
+			return;
+		}
+		let lines = '<span class="label">원거래 ' + d.tranId + '</span>\n';
+		lines += '원장 상태: <span class="st-unknown">' + d.before + '</span>\n\n';
+		lines += '<span class="dir">① 거래상태조회(0400)</span> req ' + d.statusInquiry.requestLength + 'B: ' + shortHex(d.statusInquiry.requestHex) + '\n';
+		lines += '   → 계정계: <b>' + (d.processedAtCore ? '처리됨(01)' : '미처리(02)') + '</b> — ' + d.statusInquiry.coreMessage + '\n\n';
+		if (d.netCancel) {
+			lines += '<span class="dir">② 망취소(0420)</span> req ' + d.netCancel.requestLength + 'B: ' + shortHex(d.netCancel.requestHex) + '\n';
+			lines += '   → 계정계: ' + d.netCancel.coreMessage + '\n\n';
+		} else {
+			lines += '<span class="label">② 망취소 생략 — 미처리 거래는 취소할 것이 없다</span>\n\n';
+		}
+		const cls = ST_CLASS[d.after] || '';
+		lines += '원장 확정: <span class="st-unknown">UNKNOWN</span> → <span class="' + cls + '">' + d.after + '</span>'
+			+ '  (방법 ' + (d.resolutionMethod || '-') + ')';
+		out.innerHTML = lines;
+		refreshUnknown();
+		refreshLedger();
+	}
+
+	async function makeUnknown(accountNo, label) {
+		const out = document.getElementById("resolveOut");
+		out.textContent = label + " 전송 중... (재시도 포함, 거래 데드라인 5초까지)";
+		try {
+			const res = await fetch("/api/gateway/balance", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "X-API-Key": "demo-key-fintech-a" },
+				body: JSON.stringify({ accountNo })
+			});
+			const d = await res.json();
+			out.innerHTML = 'HTTP ' + res.status + ' — 거래 ' + (d.transactionId || '?')
+				+ ' → 원장 <span class="st-unknown">' + (d.ledgerStatus || '?') + '</span>';
+		} catch (e) {
+			out.innerHTML = '<span class="err">요청 실패: ' + e.message + '</span>';
+		}
+		setTimeout(() => { refreshUnknown(); refreshLedger(); }, 400);
+	}
+
+	async function doBurst() {
+		const n = Math.max(1, Math.min(20, parseInt(document.getElementById("burstCount").value) || 5));
+		const out = document.getElementById("burstOut");
+		out.textContent = "연속 호출 중...";
+		let lines = "";
+		for (let i = 1; i <= n; i++) {
+			const res = await fetch("/api/gateway/balance", {
+				method: "POST",
+				headers: { "Content-Type": "application/json", "X-API-Key": "demo-key-fintech-b" },
+				body: JSON.stringify({ accountNo: "12345678901234" })
+			});
+			let note = "";
+			if (res.status === 200) note = '<span class="ok">200 성공</span>';
+			else if (res.status === 503) note = '<span class="err">503 서킷 OPEN — 계정계 호출 없이 즉시 거절</span>';
+			else if (res.status === 502) note = '<span class="err">502 백엔드 실패</span>';
+			else if (res.status === 504) note = '<span class="st-unknown">504 타임아웃(UNKNOWN)</span>';
+			else if (res.status === 429) note = '<span class="err">429 유량 초과</span>';
+			else note = res.status;
+			lines += '#' + i + '  ' + note + '\n';
+			out.innerHTML = lines;
+			await refreshCircuit();
+		}
+		refreshLedger();
+	}
+
+	document.getElementById("resSlowBtn").addEventListener("click", () => makeUnknown("99999999999999", "지연 계좌"));
+	document.getElementById("resDropBtn").addEventListener("click", () => makeUnknown("88888888888888", "유실 계좌"));
+	document.getElementById("burstBtn").addEventListener("click", doBurst);
+	document.getElementById("circuitRefreshBtn").addEventListener("click", refreshCircuit);
+	refreshCircuit();
+	refreshUnknown();
+	setInterval(refreshCircuit, 5000);
+</script>
+
 <script>
 	// --- 거래 원장 (Phase 5) ---
-	const ST_CLASS = { SUCCESS: "st-success", FAILED: "st-failed", UNKNOWN: "st-unknown" };
+	const ST_CLASS = { SUCCESS: "st-success", FAILED: "st-failed", UNKNOWN: "st-unknown", CANCELED: "st-canceled" };
 
 	async function refreshLedger() {
 		const [recentRes, summaryRes] = await Promise.all([
@@ -380,6 +569,7 @@
 		document.getElementById("lsSuccess").textContent = summary.SUCCESS;
 		document.getElementById("lsFailed").textContent = summary.FAILED;
 		document.getElementById("lsUnknown").textContent = summary.UNKNOWN;
+		document.getElementById("lsCanceled").textContent = summary.CANCELED;
 		document.getElementById("lsTotal").textContent = summary.TOTAL;
 
 		if (!recent.length) {
@@ -388,7 +578,7 @@
 		}
 		let rows = '<table class="rec" style="margin-top:0;"><thead><tr>'
 			+ '<th class="txt">거래ID</th><th class="txt">코드</th><th class="txt">상태</th>'
-			+ '<th>소요ms</th><th class="txt">계좌(마스킹)</th><th class="txt">응답코드</th><th class="txt">correlation</th>'
+			+ '<th>소요ms</th><th class="txt">계좌(마스킹)</th><th class="txt">응답코드</th><th class="txt">해소</th><th class="txt">correlation</th>'
 			+ '</tr></thead><tbody>';
 		for (const e of recent) {
 			rows += '<tr>'
@@ -398,6 +588,7 @@
 				+ '<td>' + e.elapsedMs + '</td>'
 				+ '<td class="txt" style="font-family:var(--mono);">' + e.accountMasked + '</td>'
 				+ '<td class="txt">' + (e.responseCode || '-') + '</td>'
+				+ '<td class="txt">' + (e.resolutionMethod || '-') + '</td>'
 				+ '<td class="txt" style="font-family:var(--mono);">' + (e.correlationId || '-') + '</td>'
 				+ '</tr>';
 		}

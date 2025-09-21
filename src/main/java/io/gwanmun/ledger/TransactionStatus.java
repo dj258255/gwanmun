@@ -15,12 +15,20 @@ import java.net.SocketTimeoutException;
  *       끊겼다. 계정계에서는 처리됐을 수도, 안 됐을 수도 있다. 이걸 임의로 FAILED로 적으면
  *       "실패인 줄 알고 재시도했더니 이중 거래"가 된다 — 그래서 모른다고 정직하게 적는다.</li>
  * </ul>
+ *
+ * <p><b>Phase 6에서 {@link #CANCELED}가 붙었다</b> — UNKNOWN을 해소한 결과다. UNKNOWN 거래를
+ * 거래상태조회로 확인해 "계정계가 처리했음"이 확인되면 망취소로 원거래를 무효화하고 CANCELED로
+ * 확정한다("미처리"면 FAILED로 확정). CANCELED로 들어오는 길은 해소 절차뿐이다 — 거래 시점 판정
+ * ({@link #ofResponseCode}/{@link #ofFailure})은 여전히 3값만 낸다.
  */
 public enum TransactionStatus {
 
 	SUCCESS,
 	FAILED,
-	UNKNOWN;
+	UNKNOWN,
+
+	/** UNKNOWN 해소 결과 — 상태조회로 "처리됨" 확인 후 망취소로 원거래를 무효화해 확정한 상태. */
+	CANCELED;
 
 	/** 정상 응답코드(계정계 관례). 이 코드면 SUCCESS, 다른 코드는 명확한 오류 응답이므로 FAILED. */
 	private static final String OK_RESPONSE_CODE = "0000";

@@ -2,6 +2,10 @@ package io.gwanmun.message;
 
 import io.gwanmun.message.dto.BalanceInquiryRequest;
 import io.gwanmun.message.dto.BalanceInquiryResponse;
+import io.gwanmun.message.dto.NetCancelRequest;
+import io.gwanmun.message.dto.NetCancelResponse;
+import io.gwanmun.message.dto.TransactionStatusInquiryRequest;
+import io.gwanmun.message.dto.TransactionStatusInquiryResponse;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -19,6 +23,11 @@ public class MessageRegistry {
 	public MessageRegistry() {
 		specs.put("balanceRequest", BalanceInquiryRequest.class);
 		specs.put("balanceResponse", BalanceInquiryResponse.class);
+		// Phase 6 — UNKNOWN 해소 전문 2종(거래상태조회·망취소).
+		specs.put("statusInquiryRequest", TransactionStatusInquiryRequest.class);
+		specs.put("statusInquiryResponse", TransactionStatusInquiryResponse.class);
+		specs.put("netCancelRequest", NetCancelRequest.class);
+		specs.put("netCancelResponse", NetCancelResponse.class);
 	}
 
 	/** 스펙명으로 DTO 클래스를 찾는다. 없으면 명확히 실패. */

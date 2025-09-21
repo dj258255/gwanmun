@@ -89,6 +89,17 @@ class GatewayFilterChainTest {
 	}
 
 	@Test
+	@DisplayName("경로 변수 라우트(/resolve/{tranId})는 접두어 매칭으로 통과한다 (Phase 6)")
+	void resolveRouteMatchesByPrefix() {
+		GatewayResponse res = run(
+				request("POST", "/api/gateway/resolve/GWMNU20260709000000001",
+						Map.of("X-API-Key", VALID_KEY)), chain(5));
+
+		assertThat(res.blocked()).isFalse();
+		assertThat(res.headers()).containsEntry("X-Gateway-Route", "core-banking-resolve");
+	}
+
+	@Test
 	@DisplayName("정상 키 + 아는 경로면 통과하고, 통과 흔적 헤더가 남는다")
 	void validRequest_passes() {
 		GatewayResponse res = run(

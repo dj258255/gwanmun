@@ -35,6 +35,11 @@ class ConnectionPoolTest {
 		}
 
 		@Override
+		public void setReadTimeout(int millis) {
+			// 가짜 연결 — 풀 계약 시험에는 타임아웃이 필요 없다.
+		}
+
+		@Override
 		public void close() {
 			closed = true;
 		}

@@ -26,19 +26,19 @@ class MessageControllerTest {
 	@DisplayName("POST /api/build → hex·아스키·길이를 반환")
 	void buildEndpoint() throws Exception {
 		String body = """
-				{"spec":"balanceRequest","fields":{"messageType":"0200","accountNo":"12345678901234","txCode":"IN01","filler":""}}
+				{"spec":"balanceRequest","fields":{"messageType":"0200","tranId":"GWMNU20260709000000001","accountNo":"12345678901234","txCode":"IN01","filler":""}}
 				""";
 		mvc.perform(post("/api/build").contentType(MediaType.APPLICATION_JSON).content(body))
 				.andExpect(status().isOk())
-				.andExpect(jsonPath("$.length").value(30))
+				.andExpect(jsonPath("$.length").value(52))
 				.andExpect(jsonPath("$.hex").exists());
 	}
 
 	@Test
 	@DisplayName("POST /api/parse → 파싱된 JSON 필드를 반환")
 	void parseEndpoint() throws Exception {
-		// "0200" + "12345678901234" + "IN01" + 공백8 을 hex로 (모두 ASCII).
-		String hex = "30323030" + "3132333435363738393031323334" + "494E3031" + "2020202020202020";
+		// "0200" + 거래ID 자리(공백22) + "12345678901234" + "IN01" + 공백8 을 hex로 (모두 ASCII).
+		String hex = "30323030" + "20".repeat(22) + "3132333435363738393031323334" + "494E3031" + "2020202020202020";
 		String body = "{\"spec\":\"balanceRequest\",\"hex\":\"" + hex + "\"}";
 		mvc.perform(post("/api/parse").contentType(MediaType.APPLICATION_JSON).content(body))
 				.andExpect(status().isOk())

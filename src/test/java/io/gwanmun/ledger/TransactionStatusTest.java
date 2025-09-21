@@ -5,6 +5,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.EOFException;
 import java.io.IOException;
+import io.gwanmun.core.CircuitOpenException;
+
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 
@@ -61,5 +63,14 @@ class TransactionStatusTest {
 		assertThat(TransactionStatus.ofFailure(new IllegalStateException("boom")))
 				.isEqualTo(TransactionStatus.FAILED);
 		assertThat(TransactionStatus.ofFailure(null)).isEqualTo(TransactionStatus.FAILED);
+	}
+
+	@Test
+	@DisplayName("서킷 OPEN 즉시 거절 → 요청이 나가지도 않았으므로 UNKNOWN이 아니라 FAILED (Phase 6)")
+	void circuitOpenIsFailed() {
+		// IOException 계열이지만 계정계에서 처리됐을 가능성이 0인 실패 — 3값 판정이 이를 구분해야 한다.
+		Throwable wrapped = new RuntimeException("통신 실패",
+				new CircuitOpenException("core-banking", "서킷 OPEN — 즉시 실패"));
+		assertThat(TransactionStatus.ofFailure(wrapped)).isEqualTo(TransactionStatus.FAILED);
 	}
 }

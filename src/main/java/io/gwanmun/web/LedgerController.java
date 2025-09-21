@@ -17,7 +17,8 @@ import java.util.Map;
  *
  * <ul>
  *   <li>GET /api/ledger/recent?limit=N — 최근 거래 N건(최신 먼저)</li>
- *   <li>GET /api/ledger/summary — 상태별 누적 건수(SUCCESS/FAILED/UNKNOWN)</li>
+ *   <li>GET /api/ledger/summary — 상태별 누적 건수(SUCCESS/FAILED/UNKNOWN/CANCELED)</li>
+ *   <li>GET /api/ledger/unknown?limit=N — 해소 대상(UNKNOWN) 거래 목록(Phase 6)</li>
  * </ul>
  */
 @RestController
@@ -33,6 +34,12 @@ public class LedgerController {
 	@GetMapping("/recent")
 	public List<LedgerView> recent(@RequestParam(defaultValue = "20") int limit) {
 		return ledger.recent(limit);
+	}
+
+	/** 해소 대상 — UNKNOWN으로 남아 있는 거래 목록(Phase 6). */
+	@GetMapping("/unknown")
+	public List<LedgerView> unknown(@RequestParam(defaultValue = "20") int limit) {
+		return ledger.byStatus(TransactionStatus.UNKNOWN, limit);
 	}
 
 	@GetMapping("/summary")

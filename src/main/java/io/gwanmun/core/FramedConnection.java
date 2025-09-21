@@ -72,6 +72,12 @@ public final class FramedConnection implements PoolableConnection {
 		out.flush();
 	}
 
+	/** 이번 시도의 read 타임아웃을 조정한다(거래 데드라인의 남은 시간으로 깎을 때). */
+	@Override
+	public void setReadTimeout(int millis) throws java.net.SocketException {
+		socket.setSoTimeout(millis);
+	}
+
 	/** 유휴로 풀에 놓였던 소켓이 그새 죽지 않았는지(재사용 가능 여부). */
 	@Override
 	public boolean isValid() {

@@ -1,9 +1,10 @@
 package io.gwanmun.core;
 
 import java.io.Closeable;
+import java.net.SocketException;
 
 /**
- * {@link ConnectionPool}이 관리할 수 있는 연결. 풀은 이 두 가지만 알면 된다 —
+ * {@link ConnectionPool}이 관리할 수 있는 연결. 풀은 이것만 알면 된다 —
  * "지금도 쓸 수 있나({@link #isValid()})"와 "닫는 법({@link Closeable#close()})".
  *
  * <p>풀이 프레이밍이나 전문 스펙 같은 상위 개념을 몰라도 되게 최소한으로 좁혔다. 실제 구현은
@@ -16,4 +17,11 @@ public interface PoolableConnection extends Closeable {
 	 * 있으므로, 빌려주기/반납 시점에 검증해 죽은 연결을 걸러 낸다.
 	 */
 	boolean isValid();
+
+	/**
+	 * 이번 사용의 read 타임아웃을 조정한다 (Phase 6). 풀에 놓인 소켓은 생성 시 설정값으로 열리지만,
+	 * 거래 단위 데드라인이 남은 시간만큼으로 <b>이번 시도의</b> read 제한을 깎아야 할 때가 있다 —
+	 * 마지막 재시도가 데드라인을 넘겨 늘어지지 않게.
+	 */
+	void setReadTimeout(int millis) throws SocketException;
 }

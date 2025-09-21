@@ -26,18 +26,20 @@ class MessageCodecTest {
 	private final ObjectMapper objectMapper = new ObjectMapper();
 
 	@Test
-	@DisplayName("스펙 총 길이가 필드 길이 합과 같다 (요청 30 / 응답 61 byte)")
+	@DisplayName("스펙 총 길이가 필드 길이 합과 같다 (요청 52 / 응답 61 byte)")
 	void specTotalLength() {
-		assertThat(MessageSpec.of(BalanceInquiryRequest.class).totalLength()).isEqualTo(30);
+		// 요청 전문은 Phase 6에서 거래고유번호(22byte)가 붙어 30 → 52 byte가 됐다.
+		assertThat(MessageSpec.of(BalanceInquiryRequest.class).totalLength()).isEqualTo(52);
 		assertThat(MessageSpec.of(BalanceInquiryResponse.class).totalLength()).isEqualTo(61);
 	}
 
 	@Test
 	@DisplayName("요청 전문 왕복 무손실: DTO → byte[] → DTO 가 동일")
 	void requestRoundTrip() {
-		BalanceInquiryRequest req = new BalanceInquiryRequest("0200", "12345678901234", "IN01", "");
+		BalanceInquiryRequest req = new BalanceInquiryRequest(
+				"0200", "GWMNU20260709000000001", "12345678901234", "IN01", "");
 		byte[] raw = codec.build(req);
-		assertThat(raw).hasSize(30);
+		assertThat(raw).hasSize(52);
 
 		BalanceInquiryRequest parsed = codec.parse(raw, BalanceInquiryRequest.class);
 		assertThat(parsed).isEqualTo(req);
@@ -111,15 +113,16 @@ class MessageCodecTest {
 	@Test
 	@DisplayName("문자 패딩: 좌측 정렬 + 우측 공백. filler(길이8)는 공백 8칸")
 	void textRightSpacePadding() {
-		BalanceInquiryRequest req = new BalanceInquiryRequest("0200", "1", "IN01", "");
+		BalanceInquiryRequest req = new BalanceInquiryRequest(
+				"0200", "GWMNU20260709000000001", "1", "IN01", "");
 		byte[] raw = codec.build(req);
 
-		// filler 필드는 오프셋 22, 길이 8.
-		String fillerField = new String(Arrays.copyOfRange(raw, 22, 30), StandardCharsets.US_ASCII);
+		// filler 필드는 오프셋 44, 길이 8 (Phase 6: 거래ID 22byte가 앞에 끼어 오프셋이 밀렸다).
+		String fillerField = new String(Arrays.copyOfRange(raw, 44, 52), StandardCharsets.US_ASCII);
 		assertThat(fillerField).isEqualTo("        "); // 공백 8
 
-		// 계좌번호 "1"은 좌측 제로패딩 → "00000000000001"
-		String accountField = new String(Arrays.copyOfRange(raw, 4, 18), StandardCharsets.US_ASCII);
+		// 계좌번호 "1"은 좌측 제로패딩 → "00000000000001" (오프셋 26)
+		String accountField = new String(Arrays.copyOfRange(raw, 26, 40), StandardCharsets.US_ASCII);
 		assertThat(accountField).isEqualTo("00000000000001");
 	}
 
@@ -137,7 +140,8 @@ class MessageCodecTest {
 	@Test
 	@DisplayName("길이 초과(숫자): 15자리 계좌번호를 14byte 필드에 → GwanmunBuildException")
 	void buildFailsWhenNumericTooLong() {
-		BalanceInquiryRequest req = new BalanceInquiryRequest("0200", "123456789012345", "IN01", "");
+		BalanceInquiryRequest req = new BalanceInquiryRequest(
+				"0200", "GWMNU20260709000000001", "123456789012345", "IN01", "");
 		assertThatThrownBy(() -> codec.build(req))
 				.isInstanceOf(GwanmunBuildException.class)
 				.hasMessageContaining("accountNo");

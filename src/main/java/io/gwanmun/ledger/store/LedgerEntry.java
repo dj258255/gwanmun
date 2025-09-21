@@ -76,6 +76,14 @@ public class LedgerEntry {
 	@Column(length = 64)
 	private String correlationId;
 
+	/** UNKNOWN 해소 시각(해소된 경우만, Phase 6). */
+	@Column
+	private Instant resolvedAt;
+
+	/** 해소 방법: NET_CANCEL(망취소로 무효화) / STATUS_INQUIRY(상태조회로 미처리 확인). */
+	@Column(length = 20)
+	private String resolutionMethod;
+
 	public LedgerEntry(String transactionId, String txCode, String accountMasked,
 			TransactionStatus status, String responseCode, String detail,
 			Instant requestedAt, Instant respondedAt, long elapsedMs, String correlationId) {
@@ -89,5 +97,16 @@ public class LedgerEntry {
 		this.respondedAt = respondedAt;
 		this.elapsedMs = elapsedMs;
 		this.correlationId = correlationId;
+	}
+
+	/**
+	 * UNKNOWN 거래를 확정 짓는다 (Phase 6). 상태와 함께 해소 시각·방법·사유를 남겨,
+	 * "언제 어떻게 UNKNOWN에서 벗어났는지"가 원장 스스로 읽히게 한다.
+	 */
+	public void resolve(TransactionStatus newStatus, String method, String resolutionDetail, Instant at) {
+		this.status = newStatus;
+		this.resolutionMethod = method;
+		this.detail = resolutionDetail;
+		this.resolvedAt = at;
 	}
 }

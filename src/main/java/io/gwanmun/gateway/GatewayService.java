@@ -15,8 +15,8 @@ import java.io.IOException;
  * 게이트웨이 왕복의 배선. REST(JSON)로 들어온 잔액조회를 계정계 전문 왕복으로 통역한다.
  *
  * <pre>
- *  accountNo(JSON)
- *    → 요청 전문 build(30byte)   [MessageCodec]
+ *  accountNo + 거래ID(JSON)
+ *    → 요청 전문 build(52byte)   [MessageCodec]
  *    → TCP 송신·응답 수신(프레이밍) [CoreBankingClient]
  *    → 응답 전문 parse(61byte)    [MessageCodec]
  *    → 결과(JSON)
@@ -41,10 +41,15 @@ public class GatewayService {
 		this.client = client;
 	}
 
-	/** 잔액조회 한 건을 계정계와 전문으로 왕복하고, 오간 전문 바이트와 파싱 결과를 함께 담아 돌려준다. */
-	public GatewayResult balanceInquiry(String accountNo) {
+	/**
+	 * 잔액조회 한 건을 계정계와 전문으로 왕복하고, 오간 전문 바이트와 파싱 결과를 함께 담아 돌려준다.
+	 *
+	 * <p>Phase 6부터 거래고유번호를 요청 전문에 싣는다 — 계정계가 이 열쇠로 거래를 기억해야,
+	 * 응답을 못 받은 거래(UNKNOWN)를 나중에 상태조회·망취소로 확정 지을 수 있다.
+	 */
+	public GatewayResult balanceInquiry(String accountNo, String transactionId) {
 		BalanceInquiryRequest request = new BalanceInquiryRequest(
-				REQUEST_MESSAGE_TYPE, accountNo, TX_CODE_BALANCE, "");
+				REQUEST_MESSAGE_TYPE, transactionId, accountNo, TX_CODE_BALANCE, "");
 		byte[] requestFrame = codec.build(request);
 
 		long startNanos = System.nanoTime();

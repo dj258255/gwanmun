@@ -36,11 +36,11 @@ class GatewayServiceTest {
 	}
 
 	@Test
-	@DisplayName("왕복 결과에 오간 전문 바이트(요청 30 / 응답 61)와 파싱 JSON이 함께 담긴다")
+	@DisplayName("왕복 결과에 오간 전문 바이트(요청 52 / 응답 61)와 파싱 JSON이 함께 담긴다")
 	void roundTripCarriesFrames() {
-		GatewayResult result = gateway.balanceInquiry("12345678901234");
+		GatewayResult result = gateway.balanceInquiry("12345678901234", "GWMNU20260709000000001");
 
-		assertThat(result.requestFrame()).hasSize(30);
+		assertThat(result.requestFrame()).hasSize(52);
 		assertThat(result.responseFrame()).hasSize(61);
 		assertThat(result.response().getResponseCode()).isEqualTo("0000");
 		assertThat(result.response().getAccountNo()).isEqualTo("12345678901234");
@@ -52,7 +52,7 @@ class GatewayServiceTest {
 	@DisplayName("계정계가 죽어 있으면 GatewayException(통신 실패)로 감싼다")
 	void wrapsConnectFailure() {
 		server.close(); // 계정계 종료
-		assertThatThrownBy(() -> gateway.balanceInquiry("12345678901234"))
+		assertThatThrownBy(() -> gateway.balanceInquiry("12345678901234", "GWMNU20260709000000002"))
 				.isInstanceOf(GatewayException.class)
 				.hasMessageContaining("통신 실패");
 	}

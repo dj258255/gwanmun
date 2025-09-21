@@ -72,6 +72,12 @@ public final class LengthPrefixedConnection implements PoolableConnection {
 		out.flush();
 	}
 
+	/** 이번 시도의 read 타임아웃을 조정한다(거래 데드라인의 남은 시간으로 깎을 때). */
+	@Override
+	public void setReadTimeout(int millis) throws java.net.SocketException {
+		socket.setSoTimeout(millis);
+	}
+
 	@Override
 	public boolean isValid() {
 		return !socket.isClosed()

@@ -10,11 +10,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -105,13 +107,52 @@ public class TransactionLedger {
 	public List<LedgerView> recent(int limit) {
 		int n = Math.max(1, Math.min(MAX_RECENT_LIMIT, limit));
 		return repository.findByOrderByIdDesc(PageRequest.of(0, n)).stream()
-				.map(e -> new LedgerView(e.getTransactionId(), e.getTxCode(), e.getAccountMasked(),
-						e.getStatus(), e.getResponseCode(), e.getDetail(),
-						e.getRequestedAt(), e.getElapsedMs(), e.getCorrelationId()))
+				.map(TransactionLedger::view)
 				.toList();
 	}
 
-	/** 상태별 누적 건수(3값 전부, 없으면 0). */
+	/** 특정 상태의 거래 N건(최신 먼저) — UNKNOWN 해소 대상 목록용(Phase 6). */
+	public List<LedgerView> byStatus(TransactionStatus status, int limit) {
+		int n = Math.max(1, Math.min(MAX_RECENT_LIMIT, limit));
+		return repository.findByStatusOrderByIdDesc(status, PageRequest.of(0, n)).stream()
+				.map(TransactionLedger::view)
+				.toList();
+	}
+
+	/** 거래고유번호로 한 건 조회(해소 대상 확인용, Phase 6). */
+	public Optional<LedgerView> find(String transactionId) {
+		return repository.findByTransactionId(transactionId).map(TransactionLedger::view);
+	}
+
+	/**
+	 * UNKNOWN 거래 하나를 확정 짓는다 (Phase 6 — 해소는 비동기 적재와 달리 <b>동기</b>다.
+	 * 운영자·해소 절차가 결과를 바로 봐야 하고, 원장 갱신 실패는 해소 실패로 정직하게 드러나야 한다).
+	 *
+	 * @throws IllegalStateException 대상 거래가 UNKNOWN이 아닐 때(해소는 모르는 거래에만 의미가 있다)
+	 */
+	@Transactional
+	public LedgerView resolve(String transactionId, TransactionStatus to, String method, String detail) {
+		LedgerEntry entry = repository.findByTransactionId(transactionId)
+				.orElseThrow(() -> new IllegalArgumentException("원장에 없는 거래ID: " + transactionId));
+		if (entry.getStatus() != TransactionStatus.UNKNOWN) {
+			throw new IllegalStateException(
+					"UNKNOWN 거래만 해소할 수 있습니다. 현재 상태: " + entry.getStatus());
+		}
+		entry.resolve(to, method, detail, Instant.now());
+		LedgerEntry saved = repository.save(entry);
+		meterRegistry.counter("gwanmun.ledger.resolved", "to", to.name(), "method", method).increment();
+		log.info("UNKNOWN 해소: txId={} → {} (방법={})", transactionId, to, method);
+		return view(saved);
+	}
+
+	private static LedgerView view(LedgerEntry e) {
+		return new LedgerView(e.getTransactionId(), e.getTxCode(), e.getAccountMasked(),
+				e.getStatus(), e.getResponseCode(), e.getDetail(),
+				e.getRequestedAt(), e.getElapsedMs(), e.getCorrelationId(),
+				e.getResolvedAt(), e.getResolutionMethod());
+	}
+
+	/** 상태별 누적 건수(전 상태, 없으면 0 — Phase 6부터 해소 결과 CANCELED 포함). */
 	public Map<TransactionStatus, Long> summary() {
 		Map<TransactionStatus, Long> counts = new EnumMap<>(TransactionStatus.class);
 		for (TransactionStatus status : TransactionStatus.values()) {
@@ -164,7 +205,12 @@ public class TransactionLedger {
 	) {
 	}
 
-	/** 원장 한 줄의 읽기 전용 뷰(계좌는 이미 마스킹된 값). */
+	/**
+	 * 원장 한 줄의 읽기 전용 뷰(계좌는 이미 마스킹된 값).
+	 *
+	 * @param resolvedAt       UNKNOWN 해소 시각(미해소·해당 없음이면 null)
+	 * @param resolutionMethod 해소 방법: NET_CANCEL / STATUS_INQUIRY (미해소면 null)
+	 */
 	public record LedgerView(
 			String transactionId,
 			String txCode,
@@ -174,7 +220,9 @@ public class TransactionLedger {
 			String detail,
 			Instant requestedAt,
 			long elapsedMs,
-			String correlationId
+			String correlationId,
+			Instant resolvedAt,
+			String resolutionMethod
 	) {
 	}
 }

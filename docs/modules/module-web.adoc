@@ -8,6 +8,8 @@
 * `i.g.w.GatewayController`
 * `i.g.w.LedgerController`
 * `i.g.w.MessageController`
+* `i.g.w.ResilienceController`
+* `i.g.w.ResolutionController`
 * `i.g.w.TransactionHistoryController`
 
 _Others_
@@ -18,6 +20,7 @@ _Others_
 * `i.g.l.TransactionLedger` (in ledger · 거래 원장)
 * `i.g.l.TransactionIdGenerator` (in ledger · 거래 원장)
 * `i.g.m.MessageRegistry` (in message · 전문 코덱)
-* `i.g.c.TransactionHistoryClient` (in core · 계정계 연동)
 * `i.g.c.CoreBankingClient` (in core · 계정계 연동)
+* `i.g.c.TransactionHistoryClient` (in core · 계정계 연동)
+* `i.g.g.TransactionResolutionService` (in gateway · 관문(필터 체인))
 |===

@@ -1,5 +1,6 @@
 package io.gwanmun.web;
 
+import io.gwanmun.core.CircuitOpenException;
 import io.gwanmun.gateway.GatewayException;
 import io.gwanmun.gateway.GatewayService;
 import io.gwanmun.gateway.GatewayService.GatewayResult;
@@ -82,7 +83,7 @@ public class GatewayController {
 		long startNanos = System.nanoTime();
 		GatewayResult r;
 		try {
-			r = gateway.balanceInquiry(accountNo);
+			r = gateway.balanceInquiry(accountNo, transactionId);
 		} catch (GatewayException e) {
 			long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 			// 응답을 못 받은 거래의 3값 판정 — 타임아웃/응답 없는 끊김은 UNKNOWN, 나머지는 FAILED.
@@ -90,8 +91,10 @@ public class GatewayController {
 			ledger.record(new LedgerRecord(transactionId, TX_CODE_BALANCE, accountNo,
 					status, null, e.getMessage(), requestedAt, elapsedMs, correlationId()));
 			HttpStatus http = status == TransactionStatus.UNKNOWN
-					? HttpStatus.GATEWAY_TIMEOUT   // 504: 응답을 못 받았다(결과 미확인)
-					: HttpStatus.BAD_GATEWAY;      // 502: 백엔드 실패
+					? HttpStatus.GATEWAY_TIMEOUT       // 504: 응답을 못 받았다(결과 미확인)
+					: isCircuitOpen(e)
+					? HttpStatus.SERVICE_UNAVAILABLE   // 503: 서킷 OPEN — 계정계 호출 없이 즉시 거절(Phase 6)
+					: HttpStatus.BAD_GATEWAY;          // 502: 백엔드 실패
 			Map<String, Object> body = new LinkedHashMap<>();
 			body.put("error", e.getMessage());
 			body.put("transactionId", transactionId);
@@ -119,6 +122,16 @@ public class GatewayController {
 		return MDC.get(CorrelationIdFilter.MDC_KEY);
 	}
 
+	/** 원인 사슬에 서킷 즉시 거절이 있는가 — 있으면 502가 아니라 503으로 구분해 돌려준다. */
+	private static boolean isCircuitOpen(Throwable e) {
+		for (Throwable t = e; t != null; t = t.getCause()) {
+			if (t instanceof CircuitOpenException) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	// --- 요청/응답 바디 ---
 
 	public record BalanceRequest(String accountNo) {
@@ -127,7 +140,7 @@ public class GatewayController {
 	/**
 	 * @param transactionId 이 거래에 채번된 거래고유번호(원장·로그와 같은 값)
 	 * @param ledgerStatus  원장에 적힌 3값 상태
-	 * @param requestHex    소켓으로 나간 요청 전문(30byte) hex
+	 * @param requestHex    소켓으로 나간 요청 전문(52byte — 거래고유번호 포함) hex
 	 * @param responseHex   소켓으로 돌아온 응답 전문(61byte) hex
 	 * @param json          응답 전문을 파싱한 최종 JSON(DTO 직렬화)
 	 * @param core          왕복한 계정계 host:port

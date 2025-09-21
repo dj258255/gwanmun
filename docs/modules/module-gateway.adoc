@@ -6,6 +6,7 @@
 |_Services_
 
 * `i.g.g.GatewayService`
+* `i.g.g.TransactionResolutionService`
 
 _Configuration properties_
 

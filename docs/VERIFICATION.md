@@ -428,3 +428,188 @@ gwanmun_ratelimit_rejected_total{client="fintech-b"} 2.0
   가능하지만, 중복 실행 방지는 안 된다).
 - **채번은 단일 노드 전제**: 다중 인스턴스면 노드 식별자나 중앙 채번이 필요.
 - **JWT/OAuth 여전히 미구현**(Phase 3 잔여 그대로), 원장 보존 기한·파티셔닝·감사 추적(변경 이력) 없음.
+
+---
+
+## Phase 6 — 장애 내성(서킷브레이커·재시도·데드라인) · UNKNOWN 해소(거래상태조회·망취소)
+
+Phase 5는 응답을 못 받은 거래를 UNKNOWN으로 **기록**까지만 했다. Phase 6은 두 가지를 채운다 —
+(A) 계정계 장애가 게이트웨이를 무너뜨리지 않게 막고(서킷브레이커·조회성 한정 재시도·거래 데드라인),
+(B) UNKNOWN을 **해소**한다(거래상태조회 전문으로 확인 → 처리됐으면 망취소 전문으로 무효화 → CANCELED,
+미처리면 FAILED 확정).
+
+### 검증 환경 (앱 ↔ 계정계 두 프로세스 — 계정계를 실제로 죽였다 살린다)
+
+```
+docker compose up -d                    # 원장 DB: PostgreSQL 16 (호스트 포트 25432)
+./gradlew runMockCore                   # 목업 계정계: 독립 프로세스 (9099)
+java -jar build/libs/gwanmun-0.1.0.jar --spring.profiles.active=postgres --gwanmun.core.embedded=false
+```
+
+설정: read 타임아웃 3000ms(1회 호출) / **거래 데드라인 5000ms**(재시도 포함 전체) / 재시도 최대 2회
+(조회성만, 백오프 200ms→400ms) / 서킷 임계 연속 3실패, OPEN 대기 10초, HALF_OPEN 탐침 1건.
+
+### 0) 전문 스펙 확장 — 원거래 전문에 거래고유번호를 싣는다 (30 → 52 byte)
+
+상태조회를 만들려니 구멍이 드러났다: **원거래 요청 전문에 거래고유번호 필드가 없었다.** 게이트웨이
+원장만 아는 ID로는 계정계에 "그 거래 처리했습니까"를 물을 수 없다 — 계정계가 기억할 공통 열쇠가
+전문에 실려야 한다(오픈뱅킹 전문이 bank_tran_id를 본문에 싣는 것과 같은 이유). 그래서 요청 전문
+공통 선두를 `전문구분(4) + 거래고유번호(22)`로 확장했다. 네 전문(잔액조회·상태조회·망취소 요청)이
+같은 52byte 규격이라 기존 고정길이 프레이밍·커넥션 풀을 그대로 탄다. 응답은 전부 61byte 유지.
+
+### 1) 재시도·거래 데드라인 — 지연 계좌 실측 (curl 실제 출력)
+
+```
+POST /api/gateway/balance {"accountNo":"99999999999999"}    # 목업이 응답을 5초 지연
+→ HTTP 504, ledgerStatus=UNKNOWN, 총 소요 5.02초
+```
+
+앱 로그(실제) — 1차 read 타임아웃(3000ms) → 백오프 200ms → 2차 시도의 read 타임아웃이 **남은
+시간(약 1800ms)으로 깎여** 거래 전체가 데드라인 5000ms 안에서 끝난다:
+
+```
+[core-banking] 재시도 1/2 (백오프 200ms 후): 직전 실패 = java.net.SocketTimeoutException: Read timed out
+[core-banking] 거래 데드라인(5000ms) 소진 — 재시도를 접습니다(시도 2회로 종료)
+```
+
+재시도는 **조회성 거래만** 한다. 변경성(망취소)은 `TransactionKind.MUTATION`으로 재시도 0회를
+코드가 강제한다(`ResilientExecutorTest.mutationNeverRetries` — 재시도 설정이 있어도 호출은 정확히
+1회). 응답을 못 받은 변경성 거래의 재전송은 이중 거래이기 때문이다.
+
+### 2) 서킷브레이커 — 계정계를 실제로 죽이고 관찰 (curl 실제 출력)
+
+목업 프로세스를 kill한 뒤 연속 5회 호출:
+
+```
+요청 1 → HTTP 502 : 계정계(127.0.0.1:9099) 통신 실패: Connection refused
+요청 2 → HTTP 503 : 서킷 'core-banking' OPEN — 계정계 호출을 차단하고 즉시 실패
+요청 3 → HTTP 503 : (동일)
+요청 4 → HTTP 503 : (동일)
+요청 5 → HTTP 503 : (동일)
+```
+
+- 요청 1의 시도 3회(원호출+재시도 2)가 연속 실패 임계(3)를 채워 **한 요청 안에서 서킷이 열렸다** —
+  재시도가 실패 카운트를 3배로 밀어 넣는 상호작용까지 실측으로 드러난다.
+- 요청 2~5는 계정계 호출 없이 즉시 거절. 원장에는 `elapsed_ms=0`의 **FAILED**로 남는다(psql 실측) —
+  요청이 나가지 않았으므로 UNKNOWN이 아니다(`TransactionStatus.ofFailure`가 CircuitOpen을 FAILED로 판정).
+
+목업 재기동 → 10초 대기 → 다음 호출이 탐침으로 나가 성공 → 회복. 상태 전이 로그(실제):
+
+```
+서킷 'core-banking' CLOSED → OPEN (연속 실패 3회(임계 3))
+서킷 'core-banking' OPEN → HALF_OPEN (대기 10000ms 경과 — 탐침 허용)
+서킷 'core-banking' HALF_OPEN → CLOSED (탐침 성공 — 계정계 회복 확인)
+```
+
+Prometheus 메트릭(실제 — OPEN 순간과 회복 후):
+
+```
+gwanmun_circuit_state{circuit="core-banking"} 1.0      # OPEN (0=CLOSED, 1=OPEN, 2=HALF_OPEN)
+gwanmun_circuit_opened_total{circuit="core-banking"} 2.0
+gwanmun_circuit_rejected_total{circuit="core-banking"} 5.0
+gwanmun_core_retries_total{backend="core-banking"} 2.0
+```
+
+### 3) UNKNOWN 해소 두 경로 — 원장 실측 (curl + psql 실제 출력)
+
+**(a) 지연 계좌 — 계정계는 처리했고 응답만 유실 → 망취소 → CANCELED**
+
+```
+POST /api/gateway/balance {"accountNo":"99999999999999"}   → 504, UNKNOWN (txId ...031)
+POST /api/gateway/resolve/GWMNU20260709148855031
+{
+ "before": "UNKNOWN",
+ "processedAtCore": true,
+ "statusInquiry": { "requestHex": "30343030...5354303120...", "coreMessage": "처리된 거래입니다" },
+ "netCancel":     { "requestHex": "30343230...4E43303120...", "coreMessage": "취소 완료되었습니다" },
+ "resolution": "NET_CANCELED", "after": "CANCELED", "resolutionMethod": "NET_CANCEL"
+}
+```
+
+**(b) 유실 계좌(`88888888888888`, 목업이 기록·응답 없이 연결을 닫음 — 처리 직전에 죽은 계정계)
+→ 미처리 확인 → FAILED 확정**
+
+```
+POST /api/gateway/balance {"accountNo":"88888888888888"}   → 504, UNKNOWN (txId ...032, EOF)
+POST /api/gateway/resolve/GWMNU20260709148855032
+{
+ "processedAtCore": false,
+ "statusInquiry": { "coreMessage": "미처리 거래입니다" },
+ "netCancel": null,                       # 미처리면 취소할 것이 없다 — 망취소 전문은 안 나간다
+ "resolution": "CONFIRMED_UNPROCESSED", "after": "FAILED", "resolutionMethod": "STATUS_INQUIRY"
+}
+```
+
+원장 DB 실체(psql 실제 출력) — 해소 시각·방법이 원장에 남는다:
+
+```
+     transaction_id     |  status  | elapsed_ms | resolution_method | resolved |                    detail
+------------------------+----------+------------+-------------------+----------+-----------------------------------------------
+ GWMNU20260709148855031 | CANCELED |       5007 | NET_CANCEL        | 19:31:26 | 상태조회 처리됨 → 망취소 성공 — CANCELED 확정
+ GWMNU20260709148855032 | FAILED   |        206 | STATUS_INQUIRY    | 19:29:26 | 상태조회 결과 미처리 — FAILED 확정
+```
+
+계정계(목업) 로그에도 근거가 남는다:
+
+```
+거래상태조회: 원거래=GWMNU20260709148855031 → 처리됨 (01)
+망취소: 원거래=GWMNU20260709148855031 → 취소 성공 (01)
+거래상태조회: 원거래=GWMNU20260709148855032 → 미처리 (02)
+```
+
+해소 관련 메트릭: `gwanmun_ledger_resolved_total{method="NET_CANCEL",to="CANCELED"} 1.0`,
+`gwanmun_ledger_resolved_total{method="STATUS_INQUIRY",to="FAILED"} 1.0`.
+
+### 4) 실측 중 발견한 함정 둘 (정직 기록)
+
+- **`ddl-auto: update`는 체크 제약을 갱신하지 않는다.** 상태 enum에 CANCELED를 추가하자, Phase 5
+  때 Hibernate가 PostgreSQL에 만들어 둔 `transaction_ledger_status_check`(3값만 허용)가 해소 UPDATE를
+  거부했다(`violates check constraint`). 수동 마이그레이션(`ALTER TABLE ... DROP/ADD CONSTRAINT`)으로
+  4값을 허용시켰다 — 마이그레이션 도구(Flyway 등) 부재의 비용을 실측으로 확인.
+- **그 실패 순간, 망취소는 이미 계정계에 나가 있었다.** 원장 갱신만 실패했고 원거래는 취소된 상태 —
+  해소를 다시 돌리자 상태조회→망취소가 재실행됐고, **망취소가 멱등**(이미 취소된 원거래도 취소 성공)
+  이라 안전하게 CANCELED로 수렴했다. 해소 절차가 재실행 가능해야 하는 이유가 실전에서 드러났다.
+- (부수 관찰) UNKNOWN을 만드는 실험 자체(타임아웃 2회 + EOF 1회)가 서킷을 열었고, 이후 해소의
+  상태조회 성공이 HALF_OPEN 탐침이 되어 서킷을 닫았다 — 재시도·서킷·해소가 한 몸으로 맞물린다.
+
+### 5) 화면
+
+`docs/images/resilience-demo.png` — 서킷 칩(core-banking **OPEN** 빨강 · 연속실패 3/3 · 거절 4),
+해소 플로우(상태조회 hex → 처리됨 → 망취소 hex → 원장 UNKNOWN→CANCELED), 연속 호출 로그(#1 502 →
+#2~5 503 즉시 거절). puppeteer-core 헤드리스 크롬 라이브 캡처 — 캡처 중 목업 프로세스를 실제로
+kill해서 만든 상태다(가짜 UI 아님).
+
+### 6) 테스트
+
+```
+./gradlew test   # 129개 통과 (Phase 1~5: 104 + Phase 6: 25)
+```
+
+- `CircuitBreakerTest` (5) — 임계 도달 OPEN·즉시 거절·HALF_OPEN 탐침 정원·탐침 성공 CLOSED 복귀·
+  탐침 실패 재OPEN(가짜 시계).
+- `ResilientExecutorTest` (6) — 조회성 재시도 성공, **변경성 재시도 금지(호출 정확히 1회)**, 데드라인이
+  재시도를 자름, 마지막 시도 read 타임아웃이 남은 시간으로 깎임, 서킷 열림 시 즉시 거절/원인 실패 우선.
+- `ResolutionMessageCodecTest` (3) — 상태조회·망취소 전문 왕복 무손실, 네 전문의 프레임 규격 일치
+  (요청 52/응답 61).
+- `MockCoreBankingServerTest` (+4) — 상태조회 처리됨/미처리, 망취소 성공·멱등·원거래 없음, 지연 모드가
+  응답 전에 기록(타임아웃 후 상태조회 처리됨), 유실 모드 무기록(상태조회 미처리).
+- `ResolveFlowIntegrationTest` (3) — 실제 HTTP→소켓→원장 전 구간: UNKNOWN→CANCELED(망취소),
+  UNKNOWN→FAILED(미처리 확인), UNKNOWN 아닌 거래 해소 시도 409.
+- `TransactionLedgerTest` (+2) — resolve가 상태·해소 시각·방법을 남김, UNKNOWN 아니면 거부.
+- `TransactionStatusTest` (+1) — CircuitOpen은 UNKNOWN이 아니라 FAILED.
+- `GatewayFilterChainTest` (+1) — 경로 변수 라우트(/resolve/{tranId}) 접두어 매칭 통과.
+- `ModularityTest.verify()` 계속 그린 — 새 클래스 전부 기존 5모듈 경계 안(web → gateway·ledger 조립,
+  gateway → core·message, ledger 독립). Documenter 다이어그램 갱신.
+
+### 잔여 (정직하게 안 함)
+
+- **해소는 수동 트리거만**: `POST /api/gateway/resolve/{tranId}`. 주기 스케줄러(UNKNOWN 자동 대사
+  배치)는 다음 확장 지점.
+- **멱등키 없음**: 호출자 재시도를 게이트웨이가 구분 못 하는 건 여전하다(게이트웨이 내부 재시도는
+  조회성 한정이라 안전하지만, 호출자가 변경성 요청을 재전송하면 새 거래다).
+- **응답 전문에 거래ID 없음**: 동기 소켓이라 요청-응답 매칭이 자명해 생략. 비동기 채널이면 응답에도
+  실어야 한다.
+- **마이그레이션 도구 없음**: 체크 제약 함정에서 확인했듯 `ddl-auto: update`는 반쪽이다. Flyway류는
+  확장 지점.
+- **서킷은 인스턴스 로컬**: 다중 인스턴스면 각자 따로 연다(상태 공유 없음). JWT/OAuth·HA·중앙 채번도
+  이전 잔여 그대로.

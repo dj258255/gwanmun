@@ -3,9 +3,11 @@
 |Base package
 |`io.gwanmun.core`
 |Spring components
-|* `i.g.c.ConnectionPoolMetrics`
+|* `i.g.c.CircuitBreakerMetrics`
+* `i.g.c.ConnectionPoolMetrics`
 * `i.g.c.CoreBankingClient`
 * `i.g.c.MockCoreBankingLifecycle`
 * `i.g.c.MockTransactionHistoryLifecycle`
+* `i.g.c.ResilienceSettings`
 * `i.g.c.TransactionHistoryClient`
 |===

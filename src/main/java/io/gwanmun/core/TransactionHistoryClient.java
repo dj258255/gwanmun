@@ -28,6 +28,9 @@ import java.util.List;
  * <p>Phase 4의 세 조각이 여기서 만난다 — 가변 프레이밍({@link LengthPrefixedConnection}),
  * 가변 전문 코덱({@link VariableMessageCodec}), 커넥션 풀({@link ConnectionPool}). 소켓은 풀에서
  * 빌려 재사용한다.
+ *
+ * <p><b>Phase 6</b>: 거래내역 조회는 조회성({@link TransactionKind#INQUIRY})이라
+ * {@link ResilientExecutor}의 데드라인·제한 재시도·서킷브레이커를 그대로 두른다.
  */
 @Component
 public class TransactionHistoryClient implements Closeable {
@@ -46,6 +49,8 @@ public class TransactionHistoryClient implements Closeable {
 	private final MessageCodec codec = new MessageCodec();
 	private final VariableMessageCodec variableCodec = new VariableMessageCodec();
 	private final ConnectionPool<LengthPrefixedConnection> pool;
+	private final CircuitBreaker circuit;
+	private final ResilientExecutor resilient;
 
 	@Autowired
 	public TransactionHistoryClient(
@@ -54,7 +59,8 @@ public class TransactionHistoryClient implements Closeable {
 			@Value("${gwanmun.core.connect-timeout-ms:2000}") int connectTimeoutMs,
 			@Value("${gwanmun.core.read-timeout-ms:3000}") int readTimeoutMs,
 			@Value("${gwanmun.core.pool.max-size:4}") int poolMaxSize,
-			@Value("${gwanmun.core.pool.borrow-timeout-ms:2000}") long borrowTimeoutMs) {
+			@Value("${gwanmun.core.pool.borrow-timeout-ms:2000}") long borrowTimeoutMs,
+			ResilienceSettings resilience) {
 		this.host = host;
 		this.port = port;
 		this.pool = new ConnectionPool<>("txn-history", poolMaxSize, borrowTimeoutMs,
@@ -64,11 +70,14 @@ public class TransactionHistoryClient implements Closeable {
 					socket.setSoTimeout(readTimeoutMs);
 					return new LengthPrefixedConnection(socket, MAX_BODY_LENGTH);
 				});
+		this.circuit = resilience.newCircuit("txn-history");
+		this.resilient = resilience.newExecutor("txn-history", circuit, readTimeoutMs);
 	}
 
-	/** 테스트용 기본 풀 설정 생성자. */
+	/** 테스트용 기본 풀·무재시도 설정 생성자(Phase 5까지의 단발 호출 동작). */
 	public TransactionHistoryClient(String host, int port, int connectTimeoutMs, int readTimeoutMs) {
-		this(host, port, connectTimeoutMs, readTimeoutMs, DEFAULT_POOL_MAX, DEFAULT_BORROW_TIMEOUT_MS);
+		this(host, port, connectTimeoutMs, readTimeoutMs, DEFAULT_POOL_MAX, DEFAULT_BORROW_TIMEOUT_MS,
+				ResilienceSettings.none(readTimeoutMs));
 	}
 
 	/**
@@ -83,29 +92,17 @@ public class TransactionHistoryClient implements Closeable {
 		byte[] requestWire = LengthPrefixedFramer.encode(requestBody);
 
 		long startNanos = System.nanoTime();
-		byte[] responseBody;
-		int reuseCount;
-		try (ConnectionPool<LengthPrefixedConnection>.Lease lease = pool.borrow()) {
-			reuseCount = lease.reuseCount();
-			try {
-				LengthPrefixedConnection conn = lease.connection();
-				conn.writeFrame(requestBody);
-				responseBody = conn.readFrame();
-				if (responseBody == null) {
-					lease.invalidate();
-					throw new EOFException("계정계가 응답 전문 없이 연결을 닫았습니다.");
-				}
-			} catch (IOException | RuntimeException e) {
-				lease.invalidate();
-				throw e;
-			}
+		Exchange exchanged;
+		try {
+			// 조회성 거래 — 데드라인 안에서 제한적으로 재시도한다(서킷·재시도·데드라인은 실행기가).
+			exchanged = resilient.execute(TransactionKind.INQUIRY,
+					readTimeoutMs -> exchangeOnce(requestBody, readTimeoutMs));
 		} catch (IOException e) {
 			throw new HistoryClientException(
 					"거래내역 계정계(" + host + ":" + port + ") 통신 실패: " + e.getMessage(), e);
-		} catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-			throw new HistoryClientException("거래내역 연결 대기 중 인터럽트", e);
 		}
+		byte[] responseBody = exchanged.body();
+		int reuseCount = exchanged.reuseCount();
 		long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 
 		VariableMessage<TransactionHistoryHeader, TransactionRecord> parsed =
@@ -129,9 +126,47 @@ public class TransactionHistoryClient implements Closeable {
 				host, port, elapsedMs, reuseCount);
 	}
 
+	/** 한 번의 실제 TCP 왕복(한 시도). 실패 시 이 연결은 폐기한다. */
+	private Exchange exchangeOnce(byte[] requestBody, int readTimeoutMs) throws IOException {
+		try (ConnectionPool<LengthPrefixedConnection>.Lease lease = pool.borrow()) {
+			int reuseCount = lease.reuseCount();
+			try {
+				LengthPrefixedConnection conn = lease.connection();
+				conn.setReadTimeout(readTimeoutMs);
+				conn.writeFrame(requestBody);
+				byte[] body = conn.readFrame();
+				if (body == null) {
+					lease.invalidate();
+					throw new EOFException("계정계가 응답 전문 없이 연결을 닫았습니다.");
+				}
+				return new Exchange(body, reuseCount);
+			} catch (IOException | RuntimeException e) {
+				lease.invalidate();
+				throw e;
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new IOException("거래내역 연결 대기 중 인터럽트", e);
+		}
+	}
+
+	/** 한 시도의 결과(응답 본문 + 이번에 쓴 소켓의 재사용 횟수). */
+	private record Exchange(byte[] body, int reuseCount) {
+	}
+
 	/** 현재 풀 상태 스냅샷. */
 	public ConnectionPool.Stats poolStats() {
 		return pool.stats();
+	}
+
+	/** 현재 서킷 상태 스냅샷. */
+	public CircuitBreaker.Stats circuitStats() {
+		return circuit.stats();
+	}
+
+	/** 누적 재시도 횟수(메트릭용). */
+	public long retriesTotal() {
+		return resilient.retriesTotal();
 	}
 
 	public String host() {

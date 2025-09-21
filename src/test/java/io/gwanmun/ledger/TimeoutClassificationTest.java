@@ -29,7 +29,7 @@ class TimeoutClassificationTest {
 			GatewayService gateway = new GatewayService(client);
 
 			GatewayException e = catchThrowableOfType(
-					() -> gateway.balanceInquiry(MockCoreBankingServer.DELAY_ACCOUNT),
+					() -> gateway.balanceInquiry(MockCoreBankingServer.DELAY_ACCOUNT, "GWMNU20260709000000011"),
 					GatewayException.class);
 
 			assertThat(e).isNotNull();
@@ -59,7 +59,7 @@ class TimeoutClassificationTest {
 			CoreBankingClient client = new CoreBankingClient("127.0.0.1", server.port(), 1000, 500);
 			GatewayService gateway = new GatewayService(client);
 
-			var result = gateway.balanceInquiry("12345678901234");
+			var result = gateway.balanceInquiry("12345678901234", "GWMNU20260709000000012");
 			assertThat(TransactionStatus.ofResponseCode(result.response().getResponseCode()))
 					.isEqualTo(TransactionStatus.SUCCESS);
 			client.close();
