@@ -83,6 +83,8 @@ public class TransactionLedger {
 		try {
 			writer.execute(() -> persist(record));
 		} catch (RejectedExecutionException e) {
+			// WARN 로그만으로는 유실이 조용히 쌓인다 — dropped 카운터로 알람 걸 수 있게 계수한다(Phase 7).
+			meterRegistry.counter("gwanmun.ledger.dropped", "reason", "queue_full").increment();
 			log.warn("원장 적재 큐 포화 — 이 거래의 원장 기록을 건너뜁니다(거래는 정상 진행): txId={}",
 					record.transactionId());
 		}
@@ -98,6 +100,8 @@ public class TransactionLedger {
 					r.elapsedMs(), r.correlationId()));
 		} catch (RuntimeException e) {
 			// 원장 DB 장애가 거래 장애로 번지면 안 된다. 거래는 이미 끝났고, 여기선 기록만 실패했다.
+			// 단, 삼켜진 실패(unique 위반 포함)는 dropped 카운터에 남긴다 — 유실은 보이는 유실이어야 한다.
+			meterRegistry.counter("gwanmun.ledger.dropped", "reason", "persist_error").increment();
 			log.warn("원장 적재 실패(거래는 이미 정상 진행됨): txId={} status={} 원인={}",
 					r.transactionId(), r.status(), e.toString());
 		}

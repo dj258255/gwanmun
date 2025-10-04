@@ -45,6 +45,20 @@ public final class MockTransactionHistoryServer implements Closeable {
 	private static final String[] SUMMARIES = {"급여이체", "카드결제", "공과금", "이자입금", "송금", "현금인출"};
 	private static final String[] TX_TYPES = {"입금", "출금"};
 
+	/**
+	 * fault 모드 계좌(Phase 7) — <b>레코드 영역 비정합</b>. 정상 응답을 만든 뒤 끝을 몇 byte 잘라 보낸다.
+	 * 길이 헤더는 잘린 길이와 일치하므로 전송 계층(프레이밍)은 통과하고, 파싱 단계에서 "레코드가 딱
+	 * 떨어지지 않는 쓰레기 응답"이 된다 — 계정계 버그·중간 변조로 본문이 깨진 상황의 재현.
+	 */
+	public static final String FAULT_TRUNCATED_ACCOUNT = "77777777777777";
+
+	/**
+	 * fault 모드 계좌(Phase 7) — <b>쓰레기 건수 필드</b>. 구조는 온전하지만 헤더의 recordCount 자리에
+	 * 숫자가 아닌 바이트를 심어 보낸다. 파싱은 통과하고, 자기설명 검증의 숫자 변환에서 터진다 —
+	 * "필드 값이 계약(숫자)을 어기는" 이상 응답의 재현.
+	 */
+	public static final String FAULT_GARBAGE_COUNT_ACCOUNT = "66666666666666";
+
 	private final int requestedPort;
 	private final MessageCodec codec = new MessageCodec();
 	private final VariableMessageCodec variableCodec = new VariableMessageCodec(codec);
@@ -135,7 +149,28 @@ public final class MockTransactionHistoryServer implements Closeable {
 
 		log.info("거래내역 응답 생성: 계좌={} 건수={} 본문={}byte",
 				AccountMasker.mask(accountNo), records.size(), totalLength);
-		return variableCodec.build(header, records);
+		byte[] body = variableCodec.build(header, records);
+		return applyFaultMode(accountNo, body);
+	}
+
+	/** fault 모드 계좌면 정상 본문을 "쓰레기 응답"으로 망가뜨린다(Phase 7 — 이상 응답 처리 검증용). */
+	private byte[] applyFaultMode(String accountNo, byte[] body) {
+		if (FAULT_TRUNCATED_ACCOUNT.equals(accountNo)) {
+			// 끝 3byte를 잘라 레코드 영역이 레코드 길이로 나눠떨어지지 않게 한다.
+			log.info("fault 모드(레코드 영역 비정합) — 본문 끝 3byte를 잘라 보냅니다");
+			return java.util.Arrays.copyOfRange(body, 0, body.length - 3);
+		}
+		if (FAULT_GARBAGE_COUNT_ACCOUNT.equals(accountNo)) {
+			// 헤더의 recordCount 필드(오프셋 18, 3byte)에 비숫자 바이트를 심는다. 코덱은 이런 전문을
+			// 만들 수 없으므로(빌드 검증) 바이트를 직접 오염시킨다 — 진짜 "계정계가 보낸 쓰레기"다.
+			log.info("fault 모드(쓰레기 건수 필드) — recordCount 를 'X?A' 로 오염시켜 보냅니다");
+			byte[] corrupted = body.clone();
+			corrupted[18] = 'X';
+			corrupted[19] = '?';
+			corrupted[20] = 'A';
+			return corrupted;
+		}
+		return body;
 	}
 
 	private int clampCount(String reqCount) {

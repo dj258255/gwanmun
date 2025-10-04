@@ -114,6 +114,17 @@ public final class CircuitBreaker {
 		consecutiveFailures = 0;
 	}
 
+	/**
+	 * 허가는 받았지만 <b>백엔드까지 가 보지도 못하고</b> 접었다 (Phase 7 — 내부 풀 고갈 등).
+	 * 성공도 실패도 아니므로 연속 실패 카운터를 건드리지 않는다. 단 HALF_OPEN이었다면 탐침 정원은
+	 * 돌려놓는다 — 안 돌려놓으면 나가지도 않은 탐침이 정원을 영원히 차지해 서킷이 안 닫힌다.
+	 */
+	public synchronized void onAborted() {
+		if (state == State.HALF_OPEN && probesInFlight > 0) {
+			probesInFlight--;
+		}
+	}
+
 	/** 허가받은 호출이 실패했다. CLOSED에서 임계에 닿거나 HALF_OPEN 탐침이 실패하면 OPEN. */
 	public synchronized void onFailure() {
 		if (state == State.HALF_OPEN) {

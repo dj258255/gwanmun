@@ -8,6 +8,8 @@ import io.gwanmun.ledger.TransactionLedger;
 import io.gwanmun.ledger.TransactionLedger.LedgerView;
 import io.gwanmun.ledger.TransactionStatus;
 import io.gwanmun.message.HexFormat2;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -37,6 +39,8 @@ import java.util.Optional;
 @RequestMapping("/api/gateway")
 public class ResolutionController {
 
+	private static final Logger log = LoggerFactory.getLogger(ResolutionController.class);
+
 	private final TransactionResolutionService resolution;
 	private final TransactionLedger ledger;
 
@@ -65,8 +69,10 @@ public class ResolutionController {
 			outcome = resolution.resolve(tranId);
 		} catch (GatewayException e) {
 			// 해소 전문 왕복 자체가 실패 — 원장은 UNKNOWN 그대로다(해소는 멱등이라 다시 시도하면 된다).
+			// 상세(내부 host:port·예외 원문)는 서버 로그까지만 — 외부 응답은 일반화한다(B4).
+			log.warn("해소 전문 왕복 실패: tranId={} 원인={}", tranId, e.getMessage());
 			return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(Map.of(
-					"error", e.getMessage(),
+					"error", "해소 전문 왕복에 실패했습니다. 원장은 UNKNOWN 그대로이니 다시 시도하세요.",
 					"tranId", tranId,
 					"ledgerStatus", TransactionStatus.UNKNOWN.name()));
 		}

@@ -27,11 +27,15 @@ public class ApiKeyRegistry {
 		if (props.getApiKeys() == null || props.getApiKeys().isEmpty()) {
 			map.put("demo-key-fintech-a", "fintech-a");
 			map.put("demo-key-fintech-b", "fintech-b");
-			log.info("API 키 설정이 비어 데모 기본 키 2개를 사용합니다: {}", map.keySet());
+			// fail-open 지점 — 설정이 비면 "누구나 아는 데모 키"가 살아난다. 학습판 편의로 유지하되,
+			// 조용히 켜지지 않게 WARN으로 못 박는다(운영이라면 여기서 기동 실패가 맞다).
+			log.warn("API 키 설정이 비어 데모 기본 키 {}개를 자동 활성합니다(fail-open) — "
+					+ "운영 환경이라면 gwanmun.gateway.api-keys 를 반드시 설정하세요.", map.size());
 		} else {
 			map.putAll(props.getApiKeys());
-			log.info("API 키 {}개 로드: {}", map.size(), map.keySet());
 		}
+		// 키 원문은 크리덴셜이다 — 기동 로그에는 클라이언트 id만 남긴다(B1).
+		log.info("API 키 {}개 로드 (클라이언트: {})", map.size(), map.values());
 		this.keyToClient = Map.copyOf(map);
 	}
 

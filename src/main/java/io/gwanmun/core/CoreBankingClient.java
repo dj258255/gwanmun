@@ -35,6 +35,7 @@ public class CoreBankingClient implements Closeable {
 	/** 테스트용 기본 풀 설정(스프링 밖에서 4인자 생성자를 쓸 때). */
 	private static final int DEFAULT_POOL_MAX = 4;
 	private static final long DEFAULT_BORROW_TIMEOUT_MS = 2000;
+	private static final long DEFAULT_IDLE_TTL_MS = 30_000;
 
 	private final String host;
 	private final int port;
@@ -50,10 +51,11 @@ public class CoreBankingClient implements Closeable {
 			@Value("${gwanmun.core.read-timeout-ms:3000}") int readTimeoutMs,
 			@Value("${gwanmun.core.pool.max-size:4}") int poolMaxSize,
 			@Value("${gwanmun.core.pool.borrow-timeout-ms:2000}") long borrowTimeoutMs,
+			@Value("${gwanmun.core.pool.idle-ttl-ms:30000}") long idleTtlMs,
 			ResilienceSettings resilience) {
 		this.host = host;
 		this.port = port;
-		this.pool = new ConnectionPool<>("core-banking", poolMaxSize, borrowTimeoutMs,
+		this.pool = new ConnectionPool<>("core-banking", poolMaxSize, borrowTimeoutMs, idleTtlMs,
 				() -> {
 					Socket socket = new Socket();
 					socket.connect(new InetSocketAddress(host, port), connectTimeoutMs);
@@ -67,14 +69,14 @@ public class CoreBankingClient implements Closeable {
 	/** 스프링 밖(테스트)에서 기본 풀·무재시도 설정으로 쓰는 생성자(Phase 5까지의 단발 호출 동작). */
 	public CoreBankingClient(String host, int port, int connectTimeoutMs, int readTimeoutMs) {
 		this(host, port, connectTimeoutMs, readTimeoutMs, DEFAULT_POOL_MAX, DEFAULT_BORROW_TIMEOUT_MS,
-				ResilienceSettings.none(readTimeoutMs));
+				DEFAULT_IDLE_TTL_MS, ResilienceSettings.none(readTimeoutMs));
 	}
 
 	/** 스프링 밖(테스트)에서 장애 내성 설정까지 지정하는 생성자. */
 	public CoreBankingClient(String host, int port, int connectTimeoutMs, int readTimeoutMs,
 			ResilienceSettings resilience) {
 		this(host, port, connectTimeoutMs, readTimeoutMs, DEFAULT_POOL_MAX, DEFAULT_BORROW_TIMEOUT_MS,
-				resilience);
+				DEFAULT_IDLE_TTL_MS, resilience);
 	}
 
 	/**

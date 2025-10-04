@@ -33,6 +33,12 @@ public class RouteTable {
 		// Phase 6 — UNKNOWN 해소(상태조회·망취소). 거래ID가 경로 변수라 접두어 매칭.
 		prefixRoutes.put(key("POST", "/api/gateway/resolve/"),
 				new Route("core-banking-resolve", "mock-core@127.0.0.1:9099"));
+		// Phase 7(B2) — 거래내역 조회도 관문 안으로. 실제 계정계 거래를 유발하는 경로가 무인증·무유량
+		// 제어로 열려 있었다(Phase 4의 "데모 편의" 예외가 보안 구멍으로 남은 것). 반면 /api/ledger·
+		// /api/pool/stats·/api/circuit/stats 는 계정계 호출 없는 읽기 전용 관측 경로라 관문 밖에 남긴다 —
+		// 장애 상황(서킷 OPEN·풀 고갈)을 관찰하는 요청까지 유량제어에 막히면 관측 자체가 안 되기 때문.
+		routes.put(key("POST", "/api/history"),
+				new Route("txn-history", "mock-history@127.0.0.1:9098"));
 	}
 
 	/** 요청에 맞는 라우트를 찾는다(정확 일치 우선, 다음 접두어). 없으면 empty(→ 404). */

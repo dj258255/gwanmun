@@ -1,6 +1,7 @@
 package io.gwanmun.web;
 
 import io.gwanmun.core.CircuitOpenException;
+import io.gwanmun.core.PoolExhaustedException;
 import io.gwanmun.gateway.GatewayException;
 import io.gwanmun.gateway.GatewayService;
 import io.gwanmun.gateway.GatewayService.GatewayResult;
@@ -12,6 +13,8 @@ import io.gwanmun.message.HexFormat2;
 import io.gwanmun.message.dto.BalanceInquiryResponse;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -42,6 +45,8 @@ import java.util.regex.Pattern;
 @RestController
 @RequestMapping("/api/gateway")
 public class GatewayController {
+
+	private static final Logger log = LoggerFactory.getLogger(GatewayController.class);
 
 	/** 계좌번호는 숫자 1~14자리(요청 전문 계좌 필드 14byte). */
 	private static final Pattern ACCOUNT_NO = Pattern.compile("\\d{1,14}");
@@ -77,29 +82,55 @@ public class GatewayController {
 			ledger.record(new LedgerRecord(transactionId, TX_CODE_BALANCE, accountNo,
 					TransactionStatus.FAILED, null, "입력 오류: accountNo 형식 위반",
 					requestedAt, 0, correlationId()));
-			throw new IllegalArgumentException("accountNo 는 숫자 1~14자리여야 합니다. (입력='" + accountNo + "')");
+			// 원문 입력을 에코하지 않는다(B4) — 무엇이 틀렸는지는 규칙으로 설명한다.
+			throw new IllegalArgumentException("accountNo 는 숫자 1~14자리여야 합니다.");
 		}
 
 		long startNanos = System.nanoTime();
 		GatewayResult r;
 		try {
 			r = gateway.balanceInquiry(accountNo, transactionId);
+		} catch (PoolExhaustedException e) {
+			// 내부 커넥션 풀 고갈(Phase 7) — 요청이 계정계로 나가기 전의 명확한 실패다.
+			// (a) 원장에 FAILED로 남기고 (b) 서킷에는 계수되지 않았고(실행기가 보장) (c) 503으로 거절한다.
+			long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+			log.warn("풀 고갈로 거래 거절: txId={} ({})", transactionId, e.getMessage());
+			ledger.record(new LedgerRecord(transactionId, TX_CODE_BALANCE, accountNo,
+					TransactionStatus.FAILED, null, "게이트웨이 내부 커넥션 풀 고갈: " + e.getMessage(),
+					requestedAt, elapsedMs, correlationId()));
+			return errorBody(HttpStatus.SERVICE_UNAVAILABLE,
+					"게이트웨이가 일시적으로 포화 상태입니다. 잠시 후 다시 시도하세요.",
+					transactionId, TransactionStatus.FAILED);
 		} catch (GatewayException e) {
 			long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 			// 응답을 못 받은 거래의 3값 판정 — 타임아웃/응답 없는 끊김은 UNKNOWN, 나머지는 FAILED.
 			TransactionStatus status = TransactionStatus.ofFailure(e);
+			// 상세(내부 host:port·예외 원문)는 서버 로그·원장까지만. 외부 응답은 일반화한다(B4).
+			log.warn("게이트웨이 왕복 실패: txId={} status={} 원인={}", transactionId, status, e.getMessage());
 			ledger.record(new LedgerRecord(transactionId, TX_CODE_BALANCE, accountNo,
 					status, null, e.getMessage(), requestedAt, elapsedMs, correlationId()));
-			HttpStatus http = status == TransactionStatus.UNKNOWN
-					? HttpStatus.GATEWAY_TIMEOUT       // 504: 응답을 못 받았다(결과 미확인)
-					: isCircuitOpen(e)
-					? HttpStatus.SERVICE_UNAVAILABLE   // 503: 서킷 OPEN — 계정계 호출 없이 즉시 거절(Phase 6)
-					: HttpStatus.BAD_GATEWAY;          // 502: 백엔드 실패
-			Map<String, Object> body = new LinkedHashMap<>();
-			body.put("error", e.getMessage());
-			body.put("transactionId", transactionId);
-			body.put("ledgerStatus", status.name());
-			return ResponseEntity.status(http).body(body);
+			HttpStatus http;
+			String reason;
+			if (status == TransactionStatus.UNKNOWN) {
+				http = HttpStatus.GATEWAY_TIMEOUT;     // 504: 응답을 못 받았다(결과 미확인)
+				reason = "계정계 응답을 확인하지 못했습니다(결과 미확인). 같은 요청을 재전송하지 마세요.";
+			} else if (isCircuitOpen(e)) {
+				http = HttpStatus.SERVICE_UNAVAILABLE; // 503: 서킷 OPEN — 계정계 호출 없이 즉시 거절(Phase 6)
+				reason = "계정계 경로가 일시 차단 상태입니다. 잠시 후 다시 시도하세요.";
+			} else {
+				http = HttpStatus.BAD_GATEWAY;         // 502: 백엔드 실패
+				reason = "계정계 처리에 실패했습니다.";
+			}
+			return errorBody(http, reason, transactionId, status);
+		} catch (RuntimeException e) {
+			// 최후 방어(Phase 7) — 어떤 예외 경로로도 원장에 구멍을 내지 않는다.
+			long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+			log.error("게이트웨이 미분류 오류: txId={}", transactionId, e);
+			ledger.record(new LedgerRecord(transactionId, TX_CODE_BALANCE, accountNo,
+					TransactionStatus.FAILED, null, "미분류 내부 오류: " + e,
+					requestedAt, elapsedMs, correlationId()));
+			return errorBody(HttpStatus.INTERNAL_SERVER_ERROR,
+					"요청을 처리하지 못했습니다.", transactionId, TransactionStatus.FAILED);
 		}
 		roundtripTimer.record(r.elapsedMs(), TimeUnit.MILLISECONDS);
 
@@ -120,6 +151,20 @@ public class GatewayController {
 	/** 현재 요청의 correlation ID(CorrelationIdFilter가 MDC에 넣어 둔 값). */
 	private static String correlationId() {
 		return MDC.get(CorrelationIdFilter.MDC_KEY);
+	}
+
+	/**
+	 * 실패 응답 공통 바디(B4). 외부에는 일반화한 사유·거래ID·correlation ID만 나간다 —
+	 * 내부 host:port·예외 원문은 서버 로그와 원장에서 추적한다(correlationId가 그 열쇠).
+	 */
+	private static ResponseEntity<Map<String, Object>> errorBody(HttpStatus http, String reason,
+			String transactionId, TransactionStatus status) {
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("error", reason);
+		body.put("transactionId", transactionId);
+		body.put("ledgerStatus", status.name());
+		body.put("correlationId", correlationId());
+		return ResponseEntity.status(http).body(body);
 	}
 
 	/** 원인 사슬에 서킷 즉시 거절이 있는가 — 있으면 502가 아니라 503으로 구분해 돌려준다. */

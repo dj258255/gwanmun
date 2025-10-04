@@ -47,6 +47,9 @@ gwanmun:
     # true면 앱과 함께 목업 계정계를 내장 기동(개발 편의).
     # false면 계정계를 독립 프로세스로 따로 띄운 "앱↔계정계 두 프로세스" 구성.
     embedded: true
+    # 내장 목업의 지연 모드 계좌(9999...) 응답 지연(ms). 테스트가 짧은 지연으로 조절한다(Phase 7).
+    mock:
+      delay-ms: 5000
     connect-timeout-ms: 2000
     read-timeout-ms: 3000
     # Phase 4 커넥션 풀 — 요청당 소켓을 새로 열던 것을 재사용으로 바꾼다.
@@ -55,6 +58,11 @@ gwanmun:
       max-size: 4
       # 가득 찼을 때 반납을 기다리는 시간. 초과하면 무한 대기 대신 거절(빠른 실패).
       borrow-timeout-ms: 2000
+      # Phase 7: 유휴 TTL — 반납 후 이 시간이 지난 유휴 연결은 재사용하지 않고 폐기한다.
+      # isValid()는 로컬 소켓 플래그만 봐서, 계정계가 재기동하며 닫은 소켓도 멀쩡해 보인다
+      # (write는 OS 버퍼로 "성공"한 뒤 read에서야 EOF). 낡은 소켓에 변경성 전문을 태우면
+      # 억울한 UNKNOWN이 된다 — 수명으로 걸러 낸다.
+      idle-ttl-ms: 30000
     # Phase 6 장애 내성 — 거래 단위 데드라인 · 조회성 한정 재시도 · 서킷브레이커.
     resilience:
       # 소켓 read 타임아웃(위 read-timeout-ms, 1회 호출 제한)과 별개인 "거래 전체" 데드라인.

@@ -5,7 +5,12 @@ import io.gwanmun.message.spec.FieldType;
 import io.gwanmun.message.spec.MessageSpec;
 
 import java.lang.reflect.Constructor;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CodingErrorAction;
 import java.util.Arrays;
 
 /**
@@ -96,7 +101,9 @@ public class MessageCodec {
 	/**
 	 * DTO를 고정길이 전문 바이트로 만든다.
 	 *
-	 * @throws GwanmunBuildException 어떤 필드 값의 인코딩 결과가 필드 길이를 초과할 때
+	 * @throws GwanmunBuildException 어떤 필드 값의 인코딩 결과가 필드 길이를 초과할 때,
+	 *                               NUMERIC 필드에 숫자가 아닌 문자가 있을 때,
+	 *                               전문 인코딩으로 표현할 수 없는 문자가 있을 때(무음 '?' 치환 금지)
 	 */
 	public byte[] build(Object dto) {
 		MessageSpec spec = MessageSpec.of(dto.getClass());
@@ -104,7 +111,13 @@ public class MessageCodec {
 
 		for (FieldSpec field : spec.fields()) {
 			String value = getValue(dto, field);
-			byte[] encoded = value.getBytes(charset);
+			if (field.type() == FieldType.NUMERIC && !isDigits(value)) {
+				// NUMERIC은 좌측 제로 패딩과 함께 "숫자"라는 계약이다. 비숫자를 통과시키면 상대측
+				// 파서가 깨지거나(파싱 오류) 조용히 다른 값으로 읽힌다 — 나가기 전에 거절한다(Phase 7).
+				throw new GwanmunBuildException(String.format(
+						"필드 '%s' 는 NUMERIC(숫자만) 인데 숫자가 아닌 문자가 있습니다.", field.name()));
+			}
+			byte[] encoded = encode(value, field);
 			if (encoded.length > field.length()) {
 				throw new GwanmunBuildException(String.format(
 						"필드 '%s' 값이 너무 깁니다: 인코딩 후 %d byte 인데 최대 %d byte 입니다. (값='%s')",
@@ -113,6 +126,38 @@ public class MessageCodec {
 			placeField(out, field, encoded);
 		}
 		return out;
+	}
+
+	/** NUMERIC 필드 검증 — 빈 문자열은 허용한다(전부 제로 패딩 → 파싱 시 "0"). */
+	private static boolean isDigits(String value) {
+		for (int i = 0; i < value.length(); i++) {
+			char c = value.charAt(i);
+			if (c < '0' || c > '9') {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * 값을 전문 인코딩으로 fail-closed 인코딩한다(Phase 7). {@code String.getBytes(charset)}는 매핑
+	 * 불가 문자(이모지 등 EUC-KR 밖 문자)를 <b>조용히 '?'로 치환</b>한다 — 금융 전문에서 데이터가
+	 * 소리 없이 바뀌는 것은 실패보다 나쁘다. {@link CodingErrorAction#REPORT}로 예외로 드러낸다.
+	 */
+	private byte[] encode(String value, FieldSpec field) {
+		CharsetEncoder encoder = charset.newEncoder()
+				.onMalformedInput(CodingErrorAction.REPORT)
+				.onUnmappableCharacter(CodingErrorAction.REPORT);
+		try {
+			ByteBuffer encoded = encoder.encode(CharBuffer.wrap(value));
+			byte[] bytes = new byte[encoded.remaining()];
+			encoded.get(bytes);
+			return bytes;
+		} catch (CharacterCodingException e) {
+			throw new GwanmunBuildException(String.format(
+					"필드 '%s' 값에 %s 로 표현할 수 없는 문자가 있습니다 — '?' 무음 치환 대신 거절합니다.",
+					field.name(), charset.name()), e);
+		}
 	}
 
 	/** 인코딩된 값 바이트를 타입 관례에 맞춰 정렬·패딩하여 출력 버퍼에 채운다. */

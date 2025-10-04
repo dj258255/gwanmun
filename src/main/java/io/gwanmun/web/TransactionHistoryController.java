@@ -2,6 +2,7 @@ package io.gwanmun.web;
 
 import io.gwanmun.core.ConnectionPool;
 import io.gwanmun.core.CoreBankingClient;
+import io.gwanmun.core.PoolExhaustedException;
 import io.gwanmun.core.TransactionHistoryClient;
 import io.gwanmun.core.TransactionHistoryClient.HistoryClientException;
 import io.gwanmun.core.TransactionHistoryClient.HistoryResult;
@@ -14,6 +15,8 @@ import io.gwanmun.message.dto.TransactionHistoryHeader;
 import io.gwanmun.message.dto.TransactionRecord;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -40,15 +43,20 @@ import java.util.regex.Pattern;
  *   <li>GET  /api/pool/stats — 두 풀(잔액조회·거래내역)의 현재 상태</li>
  * </ul>
  *
- * <p>이 경로는 관문 필터({@code /api/gateway/*})의 유량제어 밖이다 — 풀 재사용을 보려면 짧은 시간에
- * 여러 번 왕복해야 하는데, Phase 3의 분당 한도(용량 5)에 걸리면 그걸 못 보기 때문이다. Phase 4의
- * 초점은 전송 계층(프레이밍·풀)이라, 통역 계열 엔드포인트(/api/build 등)와 같은 무검문 경로에 둔다.
+ * <p><b>Phase 7(B2)</b>: {@code POST /api/history}를 관문 필터 체인(인증→라우팅→유량제어) 안으로
+ * 편입했다. Phase 4 때 "풀 재사용 데모를 유량제어가 막는다"는 이유로 무검문 경로에 뒀지만, 이 경로는
+ * <b>실제 계정계 거래를 유발</b>한다 — 데모 편의가 무인증 공짜 거래 통로로 남아 있던 셈이다. 데모는
+ * API 키를 붙이면 그대로 돌고, 필요하면 {@code rate-capacity} 설정으로 여유를 준다. 반면
+ * {@code GET /api/pool/stats}는 계정계 호출이 없는 읽기 전용 관측 경로라 관문 밖에 남긴다
+ * (/api/ledger·/api/circuit/stats 와 같은 판단 — 장애 관찰 요청이 유량제어에 막히면 안 된다).
  *
  * <p><b>Phase 5</b>: 이 거래도 원장에 적는다 — 거래고유번호 채번 + 3값 상태 비동기 적재.
  */
 @RestController
 @RequestMapping("/api")
 public class TransactionHistoryController {
+
+	private static final Logger log = LoggerFactory.getLogger(TransactionHistoryController.class);
 
 	private static final Pattern ACCOUNT_NO = Pattern.compile("\\d{1,14}");
 
@@ -84,7 +92,8 @@ public class TransactionHistoryController {
 			ledger.record(new LedgerRecord(transactionId, TX_CODE_HISTORY, accountNo,
 					TransactionStatus.FAILED, null, "입력 오류: accountNo 형식 위반",
 					requestedAt, 0, correlationId()));
-			throw new IllegalArgumentException("accountNo 는 숫자 1~14자리여야 합니다. (입력='" + accountNo + "')");
+			// 원문 입력을 에코하지 않는다(B4) — 무엇이 틀렸는지는 규칙으로 설명한다.
+			throw new IllegalArgumentException("accountNo 는 숫자 1~14자리여야 합니다.");
 		}
 		int count = req.count() == null ? 5 : Math.max(1, Math.min(20, req.count()));
 
@@ -92,18 +101,38 @@ public class TransactionHistoryController {
 		HistoryResult r;
 		try {
 			r = historyClient.query(accountNo, count);
+		} catch (PoolExhaustedException e) {
+			// 내부 커넥션 풀 고갈(Phase 7) — 계정계로 나가기 전의 명확한 실패: 원장 FAILED + 503.
+			long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+			log.warn("풀 고갈로 거래 거절: txId={} ({})", transactionId, e.getMessage());
+			ledger.record(new LedgerRecord(transactionId, TX_CODE_HISTORY, accountNo,
+					TransactionStatus.FAILED, null, "게이트웨이 내부 커넥션 풀 고갈: " + e.getMessage(),
+					requestedAt, elapsedMs, correlationId()));
+			return errorBody(HttpStatus.SERVICE_UNAVAILABLE,
+					"게이트웨이가 일시적으로 포화 상태입니다. 잠시 후 다시 시도하세요.",
+					transactionId, TransactionStatus.FAILED);
 		} catch (HistoryClientException e) {
 			long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 			TransactionStatus status = TransactionStatus.ofFailure(e);
+			// 상세(내부 host:port·예외 원문)는 서버 로그·원장까지만. 외부 응답은 일반화한다(B4).
+			log.warn("거래내역 왕복 실패: txId={} status={} 원인={}", transactionId, status, e.getMessage());
 			ledger.record(new LedgerRecord(transactionId, TX_CODE_HISTORY, accountNo,
 					status, null, e.getMessage(), requestedAt, elapsedMs, correlationId()));
 			HttpStatus http = status == TransactionStatus.UNKNOWN
 					? HttpStatus.GATEWAY_TIMEOUT : HttpStatus.BAD_GATEWAY;
-			Map<String, Object> body = new LinkedHashMap<>();
-			body.put("error", e.getMessage());
-			body.put("transactionId", transactionId);
-			body.put("ledgerStatus", status.name());
-			return ResponseEntity.status(http).body(body);
+			String reason = status == TransactionStatus.UNKNOWN
+					? "계정계 응답을 확인하지 못했습니다(결과 미확인). 같은 요청을 재전송하지 마세요."
+					: "계정계 처리에 실패했습니다.";
+			return errorBody(http, reason, transactionId, status);
+		} catch (RuntimeException e) {
+			// 최후 방어(Phase 7) — 어떤 예외 경로로도 원장에 구멍을 내지 않는다.
+			long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+			log.error("거래내역 미분류 오류: txId={}", transactionId, e);
+			ledger.record(new LedgerRecord(transactionId, TX_CODE_HISTORY, accountNo,
+					TransactionStatus.FAILED, null, "미분류 내부 오류: " + e,
+					requestedAt, elapsedMs, correlationId()));
+			return errorBody(HttpStatus.INTERNAL_SERVER_ERROR,
+					"요청을 처리하지 못했습니다.", transactionId, TransactionStatus.FAILED);
 		}
 		roundtripTimer.record(r.elapsedMs(), TimeUnit.MILLISECONDS);
 
@@ -130,6 +159,20 @@ public class TransactionHistoryController {
 
 	private static String correlationId() {
 		return MDC.get(CorrelationIdFilter.MDC_KEY);
+	}
+
+	/**
+	 * 실패 응답 공통 바디(B4). 외부에는 일반화한 사유·거래ID·correlation ID만 나간다 —
+	 * 내부 host:port·예외 원문은 서버 로그와 원장에서 추적한다(correlationId가 그 열쇠).
+	 */
+	private static ResponseEntity<Map<String, Object>> errorBody(HttpStatus http, String reason,
+			String transactionId, TransactionStatus status) {
+		Map<String, Object> body = new LinkedHashMap<>();
+		body.put("error", reason);
+		body.put("transactionId", transactionId);
+		body.put("ledgerStatus", status.name());
+		body.put("correlationId", correlationId());
+		return ResponseEntity.status(http).body(body);
 	}
 
 	// --- 요청/응답 바디 ---

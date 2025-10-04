@@ -613,3 +613,141 @@ kill해서 만든 상태다(가짜 UI 아님).
   확장 지점.
 - **서킷은 인스턴스 로컬**: 다중 인스턴스면 각자 따로 연다(상태 공유 없음). JWT/OAuth·HA·중앙 채번도
   이전 잔여 그대로.
+
+---
+
+## Phase 7 — 감사 결함 소탕(풀 고갈 3중 오작동·원장 공백·유휴 TTL·재시드·fail-closed 인코딩) + 보안 경화
+
+### 검증 환경
+
+```
+docker compose up -d          # 원장 PostgreSQL (호스트 25432)
+./gradlew bootRun --args='--spring.profiles.active=postgres \
+  --gwanmun.core.read-timeout-ms=8000 \
+  --gwanmun.core.resilience.transaction-deadline-ms=15000 \
+  --gwanmun.core.pool.borrow-timeout-ms=1000 \
+  --gwanmun.gateway.rate-capacity=50'
+```
+
+- 지연 계좌(9999…)의 목업 응답 지연 5초 < read 타임아웃 8초 — 풀을 쥔 요청은 **성공**한다.
+  즉 계정계는 끝까지 멀쩡하다. 실패 원인은 오직 내부 풀 고갈(풀 4, borrow 대기 1초)뿐.
+- 동일 시나리오(동시 8건 슬로우 계좌)를 **수정 전 코드(77c8f62)와 수정 후 코드에서 각각** 실행해
+  전/후를 대비했다.
+
+### 1) A1 — 풀 고갈 3중 오작동: 수정 전 (실제 출력)
+
+```
+req2/5/7/8 → HTTP 500 {"status":500,"error":"Internal Server Error"}   # 고갈 4건: 스택 관통
+req1/3/4/6 → HTTP 200 ledgerStatus=SUCCESS                             # 풀을 쥔 4건
+
+GET /api/circuit/stats →
+  "coreBanking": {"state":"OPEN","openedTotal":1, ...}                  # 내부 고갈이 서킷을 엶(오보)
+
+직후 멀쩡한 계좌 →
+  HTTP 503 "서킷 'core-banking' OPEN — ... 즉시 실패합니다"            # 멀쩡한 계정계로 가는 길 차단
+```
+
+수정 전 원장(psql): **고갈 4건이 아예 없다** — 거래가 장부에서 증발했다.
+
+```
+ GWMNU...072 | SUCCESS | 5006 |
+ GWMNU...073 | SUCCESS | 5006 |
+ GWMNU...074 | SUCCESS | 5006 |
+ GWMNU...077 | SUCCESS | 5006 |
+ GWMNU...079 | FAILED  |    1 | 계정계(127.0.0.1:9099) 통신 실패: 서킷 'core-banking' ...
+(5 rows)   ← 8건을 보냈는데 5행. 071·075·076·078이 증발.
+```
+
+### 2) A1 — 수정 후, 동일 시나리오 (실제 출력)
+
+```
+고갈 4건 → HTTP 503
+  {"error":"게이트웨이가 일시적으로 포화 상태입니다. 잠시 후 다시 시도하세요.",
+   "transactionId":"GWMNU20260709225440806","ledgerStatus":"FAILED","correlationId":"4622f445f95f4439"}
+풀을 쥔 4건 → HTTP 200 ledgerStatus=SUCCESS
+
+GET /api/circuit/stats →
+  "coreBanking": {"state":"CLOSED","consecutiveFailures":0,"openedTotal":0}   # 서킷 오보 없음
+
+직후 멀쩡한 계좌 → HTTP 200
+```
+
+수정 후 원장(psql): **9행 완결** — 보낸 8건 + 확인 1건, 구멍 없음.
+
+```
+ GWMNU...801 | SUCCESS | 5008 |
+ GWMNU...802 | SUCCESS | 5008 |
+ GWMNU...803 | SUCCESS | 5007 |
+ GWMNU...804 | FAILED  | 1008 | 게이트웨이 내부 커넥션 풀 고갈: 커넥션 풀 'core-banking' 고갈...
+ GWMNU...805 | SUCCESS | 5007 |
+ GWMNU...806 | FAILED  | 1008 | 게이트웨이 내부 커넥션 풀 고갈: ...
+ GWMNU...807 | FAILED  | 1007 | 게이트웨이 내부 커넥션 풀 고갈: ...
+ GWMNU...808 | FAILED  | 1008 | 게이트웨이 내부 커넥션 풀 고갈: ...
+ GWMNU...809 | SUCCESS |    0 |                                       ← 직후 멀쩡한 계좌 확인 호출
+(9 rows)
+```
+
+elapsed_ms=1008 ≈ borrow 대기 1000ms — 고갈 거절이 "대기 후 거절"이라는 것까지 숫자로 남는다.
+
+### 3) A2 — 계정계 이상 응답(fault 계좌): 502 + 원장 FAILED (실제 출력)
+
+```
+POST /api/history {"accountNo":"77777777777777"}  # fault: 레코드 영역 비정합(끝 3byte 잘림)
+→ HTTP 502 {"error":"계정계 처리에 실패했습니다.","transactionId":"GWMNU...810",
+            "ledgerStatus":"FAILED","correlationId":"2f346ce04a79474f"}
+
+POST /api/history {"accountNo":"66666666666666"}  # fault: recordCount 필드에 "X?A"
+→ HTTP 502 {"error":"계정계 처리에 실패했습니다.", ..., "ledgerStatus":"FAILED"}
+```
+
+원장(psql) — 수정 전이라면 500 관통 + 원장 공백이었을 두 건이 사유까지 남는다:
+
+```
+ GWMNU...810 | HI01 | FAILED | 계정계 응답 전문 처리 실패(왕복은 성공, 응답이 스펙과 다름): 레코드 영역(162 byte)이 ...
+ GWMNU...811 | HI01 | FAILED | 계정계 응답 전문 처리 실패(왕복은 성공, 응답이 스펙과 다름): For input string: "X?A"
+```
+
+### 4) B1/B2/B4 — 보안 경화 (실제 출력)
+
+```
+# B1 수정 전 기동 로그: API 키 원문 노출
+API 키 2개 로드: [demo-key-fintech-a, demo-key-fintech-b]
+# B1 수정 후: 클라이언트 id만 (grep 'demo-key' → 0건)
+API 키 2개 로드 (클라이언트: [fintech-a, fintech-b])
+
+# B2: /api/history 무인증 (수정 전 200 + 실제 계정계 거래 유발 → 수정 후 401)
+POST /api/history (키 없음) → HTTP 401 {"blocked":true,"status":401,"reason":"인증 실패: X-API-Key 헤더가 없습니다."}
+
+# B4: 400 응답의 입력 원문 에코 제거 (수정 전: 입력='12ab<script>' 에코)
+POST /api/gateway/balance {"accountNo":"12ab<script>"} → HTTP 400 {"error":"accountNo 는 숫자 1~14자리여야 합니다."}
+```
+
+에러 응답에서 내부 host:port(`127.0.0.1:9099`)·예외 클래스 원문이 사라졌고, correlationId로
+서버 로그·원장과 이어진다. `gwanmun_pool_expired_total`·`gwanmun_ledger_dropped_total`(A4/A5)이
+/actuator/prometheus에 노출된다.
+
+### 5) 테스트 — 147건 그린 (기존 129 + 회귀 18)
+
+```
+./gradlew test   →  BUILD SUCCESSFUL, tests=147 failures=0
+```
+
+- `AuditRegressionIntegrationTest` (5, 신규) — **A1 회귀 고정**: 동시 3건 슬로우 계좌 → 고갈 요청이
+  503 + 원장 FAILED + 서킷 CLOSED + 직후 정상 거래 200(HTTP→소켓→원장 전 구간, 전용 포트 29099/29098
+  컨텍스트). A2 fault 2종 502+FAILED, B2 무인증 401/유효 키 라우트 헤더, B4 400 에코 제거.
+- `ResilientExecutorTest` (+2) — 풀 고갈은 서킷 비계수·비재시도, HALF_OPEN 탐침 정원 누수 방지(onAborted).
+- `ConnectionPoolTest` (+2) — 유휴 TTL 초과 폐기(주입 시계), TTL 0 비활성(기존 동작 보존).
+- `MockTransactionHistoryServerTest` (+3) — fault 2종이 클라이언트 예외로 감싸임(원인 보존),
+  **목업 재기동 후 TTL 지난 낡은 소켓 비재사용**(실소켓, expired=1·created=2).
+- `TransactionIdGeneratorTest` (+1) — 자정 롤오버 재시드: 23:50 발급 → 자정 후 시드 되감김 확인
+  (00:10 시드 ≈ 6,000,000) → 같은 날 저녁 자연 시드 구간과 무충돌.
+- `TransactionLedgerTest` (+2) — persist 실패·큐 포화가 dropped 카운터에 남음(보이는 유실).
+- `MessageCodecTest` (+3) — 이모지 포함 빌드 거절(fail-closed), NUMERIC 비숫자 거절, 빈 NUMERIC 허용.
+- `ModularityTest.verify()` 계속 그린.
+
+### 잔여 (정직하게 안 함)
+
+- **A3 — 서킷 stale 결과 귀속**: OPEN 전이 직전에 나가 있던 호출의 늦은 onSuccess/onFailure가 새
+  상태에 섞일 수 있다. permit 토큰 방식이 답이지만 난이도 대비 실익이 낮아 이번 소탕에서 제외 —
+  [ROADMAP 감사 백로그](ROADMAP.md)에 기록.
+- 나머지 백로그(CI·k6 부하 실측·멱등키·EOD 대사 배치·Boot 3.5+)는 ROADMAP 감사 백로그 절 참조.

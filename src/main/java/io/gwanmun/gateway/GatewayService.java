@@ -55,6 +55,8 @@ public class GatewayService {
 		long startNanos = System.nanoTime();
 		byte[] responseFrame;
 		try {
+			// PoolExhaustedException(내부 풀 고갈)은 여기서 잡지 않고 그대로 올린다 — 계정계 실패가
+			// 아니라 게이트웨이 내부 사정이라, 호출 측이 503(+원장 FAILED)으로 따로 다뤄야 한다(Phase 7).
 			responseFrame = client.exchange(requestFrame);
 		} catch (IOException e) {
 			throw new GatewayException(
@@ -62,7 +64,14 @@ public class GatewayService {
 		}
 		long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 
-		BalanceInquiryResponse response = codec.parse(responseFrame, BalanceInquiryResponse.class);
+		BalanceInquiryResponse response;
+		try {
+			response = codec.parse(responseFrame, BalanceInquiryResponse.class);
+		} catch (RuntimeException e) {
+			// 왕복은 성공했는데 응답 전문이 스펙과 다르다(잘림·쓰레기). RuntimeException으로 관통시키면
+			// 컨트롤러의 원장 기록 경로를 건너뛰어 원장에 구멍이 난다 — 게이트웨이 예외로 감싼다(Phase 7).
+			throw new GatewayException("계정계 응답 전문 처리 실패(왕복은 성공): " + e.getMessage(), e);
+		}
 		// 앱 로그에도 계좌 원문을 남기지 않는다(마스킹 규칙: 앞6+뒤4만 노출).
 		log.info("게이트웨이 왕복 완료: 계좌={} 응답코드={} 잔액={} ({}ms)",
 				AccountMasker.mask(accountNo), response.getResponseCode(), response.getBalance(), elapsedMs);

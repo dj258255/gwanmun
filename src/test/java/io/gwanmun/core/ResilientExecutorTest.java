@@ -145,4 +145,50 @@ class ResilientExecutorTest {
 		assertThat(calls.get()).isEqualTo(1);
 		assertThat(cb.stats().state()).isEqualTo(CircuitBreaker.State.OPEN);
 	}
+
+	@Test
+	@DisplayName("풀 고갈(Phase 7): 서킷 실패로 계수하지 않고 그대로 던진다 — 내부 사정은 백엔드 장애가 아니다")
+	void poolExhaustionDoesNotCountAsCircuitFailure() {
+		CircuitBreaker cb = breaker(3);
+		ResilientExecutor ex = executor(cb, 1000, 10_000, 2);
+		AtomicInteger calls = new AtomicInteger();
+
+		// 임계(3)를 넘는 4번의 풀 고갈 — 수정 전에는 RuntimeException 경로로 onFailure()가 쌓여
+		// 계정계가 멀쩡해도 서킷이 열렸다(오보). 수정 후에는 한 번도 계수되지 않아야 한다.
+		for (int i = 0; i < 4; i++) {
+			assertThatThrownBy(() -> ex.execute(TransactionKind.INQUIRY, timeout -> {
+				calls.incrementAndGet();
+				throw new PoolExhaustedException("core-banking", 4, 2000);
+			})).isInstanceOf(PoolExhaustedException.class);
+		}
+
+		assertThat(cb.stats().state()).isEqualTo(CircuitBreaker.State.CLOSED); // 서킷은 그대로
+		assertThat(cb.stats().consecutiveFailures()).isZero();                 // 계수 0
+		assertThat(calls.get()).isEqualTo(4);   // 재시도도 안 한다(과부하 증폭 방지) — 호출 4회뿐
+		assertThat(ex.retriesTotal()).isZero();
+	}
+
+	@Test
+	@DisplayName("풀 고갈이 HALF_OPEN 탐침 정원을 누수시키지 않는다 — 다음 진짜 탐침이 나갈 수 있다")
+	void poolExhaustionReleasesHalfOpenProbeSlot() throws Exception {
+		CircuitBreaker cb = breaker(1);
+		ResilientExecutor ex = executor(cb, 1000, 10_000, 0);
+
+		// 서킷을 열고 대기 시간을 흘려 HALF_OPEN 진입 조건을 만든다.
+		assertThatThrownBy(() -> ex.execute(TransactionKind.INQUIRY, timeout -> {
+			throw new SocketTimeoutException("계정계 다운");
+		})).isInstanceOf(SocketTimeoutException.class);
+		assertThat(cb.stats().state()).isEqualTo(CircuitBreaker.State.OPEN);
+		advanceMs(10_001);
+
+		// 첫 탐침이 풀 고갈로 계정계까지 못 갔다 — 정원(1)을 돌려놓지 않으면 서킷이 영영 안 닫힌다.
+		assertThatThrownBy(() -> ex.execute(TransactionKind.INQUIRY, timeout -> {
+			throw new PoolExhaustedException("core-banking", 4, 2000);
+		})).isInstanceOf(PoolExhaustedException.class);
+
+		// 다음 호출이 탐침으로 나가 성공하면 서킷이 닫혀야 한다.
+		String result = ex.execute(TransactionKind.INQUIRY, timeout -> "회복");
+		assertThat(result).isEqualTo("회복");
+		assertThat(cb.stats().state()).isEqualTo(CircuitBreaker.State.CLOSED);
+	}
 }

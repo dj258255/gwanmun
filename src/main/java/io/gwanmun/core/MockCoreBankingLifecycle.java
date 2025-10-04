@@ -27,9 +27,11 @@ public class MockCoreBankingLifecycle implements SmartLifecycle {
 
 	public MockCoreBankingLifecycle(
 			@Value("${gwanmun.core.embedded:true}") boolean enabled,
-			@Value("${gwanmun.core.port:9099}") int port) {
+			@Value("${gwanmun.core.port:9099}") int port,
+			@Value("${gwanmun.core.mock.delay-ms:5000}") long delayMillis) {
 		this.enabled = enabled;
-		this.server = new MockCoreBankingServer(port);
+		// 지연 모드 대기 시간을 설정으로 — 통합 테스트가 짧은 지연으로 풀 고갈을 재현할 수 있게(Phase 7).
+		this.server = new MockCoreBankingServer(port, delayMillis);
 	}
 
 	@Override

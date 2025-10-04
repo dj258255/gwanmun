@@ -43,6 +43,7 @@ public class TransactionHistoryClient implements Closeable {
 
 	private static final int DEFAULT_POOL_MAX = 4;
 	private static final long DEFAULT_BORROW_TIMEOUT_MS = 2000;
+	private static final long DEFAULT_IDLE_TTL_MS = 30_000;
 
 	private final String host;
 	private final int port;
@@ -60,10 +61,11 @@ public class TransactionHistoryClient implements Closeable {
 			@Value("${gwanmun.core.read-timeout-ms:3000}") int readTimeoutMs,
 			@Value("${gwanmun.core.pool.max-size:4}") int poolMaxSize,
 			@Value("${gwanmun.core.pool.borrow-timeout-ms:2000}") long borrowTimeoutMs,
+			@Value("${gwanmun.core.pool.idle-ttl-ms:30000}") long idleTtlMs,
 			ResilienceSettings resilience) {
 		this.host = host;
 		this.port = port;
-		this.pool = new ConnectionPool<>("txn-history", poolMaxSize, borrowTimeoutMs,
+		this.pool = new ConnectionPool<>("txn-history", poolMaxSize, borrowTimeoutMs, idleTtlMs,
 				() -> {
 					Socket socket = new Socket();
 					socket.connect(new InetSocketAddress(host, port), connectTimeoutMs);
@@ -77,7 +79,14 @@ public class TransactionHistoryClient implements Closeable {
 	/** 테스트용 기본 풀·무재시도 설정 생성자(Phase 5까지의 단발 호출 동작). */
 	public TransactionHistoryClient(String host, int port, int connectTimeoutMs, int readTimeoutMs) {
 		this(host, port, connectTimeoutMs, readTimeoutMs, DEFAULT_POOL_MAX, DEFAULT_BORROW_TIMEOUT_MS,
-				ResilienceSettings.none(readTimeoutMs));
+				DEFAULT_IDLE_TTL_MS, ResilienceSettings.none(readTimeoutMs));
+	}
+
+	/** 테스트용: 유휴 TTL까지 지정하는 생성자(계정계 재기동 후 낡은 소켓 폐기 검증용). */
+	public TransactionHistoryClient(String host, int port, int connectTimeoutMs, int readTimeoutMs,
+			long idleTtlMs) {
+		this(host, port, connectTimeoutMs, readTimeoutMs, DEFAULT_POOL_MAX, DEFAULT_BORROW_TIMEOUT_MS,
+				idleTtlMs, ResilienceSettings.none(readTimeoutMs));
 	}
 
 	/**
@@ -95,6 +104,8 @@ public class TransactionHistoryClient implements Closeable {
 		Exchange exchanged;
 		try {
 			// 조회성 거래 — 데드라인 안에서 제한적으로 재시도한다(서킷·재시도·데드라인은 실행기가).
+			// PoolExhaustedException(내부 풀 고갈)은 여기서 감싸지 않고 타입 그대로 올린다(Phase 7) —
+			// 계정계 실패가 아니라 게이트웨이 내부 사정이라, 호출 측이 503(+원장 FAILED)으로 따로 다룬다.
 			exchanged = resilient.execute(TransactionKind.INQUIRY,
 					readTimeoutMs -> exchangeOnce(requestBody, readTimeoutMs));
 		} catch (IOException e) {
@@ -105,16 +116,26 @@ public class TransactionHistoryClient implements Closeable {
 		int reuseCount = exchanged.reuseCount();
 		long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
 
-		VariableMessage<TransactionHistoryHeader, TransactionRecord> parsed =
-				variableCodec.parse(responseBody, TransactionHistoryHeader.class, TransactionRecord.class);
+		// Phase 7: 왕복 성공 "이후"의 실패(쓰레기 응답 파싱·자기설명 검증)도 전부 클라이언트 예외로
+		// 감싼다. 파싱 예외·NumberFormatException이 RuntimeException으로 관통하면 컨트롤러의 원장
+		// 기록 경로를 건너뛰어 원장에 구멍이 난다 — 계정계 이상 응답이야말로 원장에 남아야 하는 사건이다.
+		VariableMessage<TransactionHistoryHeader, TransactionRecord> parsed;
+		try {
+			parsed = variableCodec.parse(responseBody, TransactionHistoryHeader.class, TransactionRecord.class);
 
-		// 헤더가 스스로 밝힌 건수·전체길이와 실제 파싱 결과가 맞는지 교차검증(전문의 자기 설명 확인).
-		int declaredCount = Integer.parseInt(parsed.header().getRecordCount());
-		int declaredLength = Integer.parseInt(parsed.header().getTotalLength());
-		if (declaredCount != parsed.records().size() || declaredLength != responseBody.length) {
-			throw new HistoryClientException(String.format(
-					"응답 헤더 자기설명 불일치: 헤더 건수=%d/실제=%d, 헤더 길이=%d/실제=%d",
-					declaredCount, parsed.records().size(), declaredLength, responseBody.length));
+			// 헤더가 스스로 밝힌 건수·전체길이와 실제 파싱 결과가 맞는지 교차검증(전문의 자기 설명 확인).
+			int declaredCount = Integer.parseInt(parsed.header().getRecordCount());
+			int declaredLength = Integer.parseInt(parsed.header().getTotalLength());
+			if (declaredCount != parsed.records().size() || declaredLength != responseBody.length) {
+				throw new HistoryClientException(String.format(
+						"응답 헤더 자기설명 불일치: 헤더 건수=%d/실제=%d, 헤더 길이=%d/실제=%d",
+						declaredCount, parsed.records().size(), declaredLength, responseBody.length));
+			}
+		} catch (HistoryClientException e) {
+			throw e;
+		} catch (RuntimeException e) {
+			throw new HistoryClientException(
+					"계정계 응답 전문 처리 실패(왕복은 성공, 응답이 스펙과 다름): " + e.getMessage(), e);
 		}
 
 		byte[] responseWire = LengthPrefixedFramer.encode(responseBody);

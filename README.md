@@ -67,5 +67,6 @@ hex(EUC-KR 한글 포함), 최종 JSON까지. 아래 hex는 실제로 소켓을 
 - **Phase 4** — 가변길이 전문(길이 프리픽스 프레이밍) + 커넥션 풀
 - **Phase 5** — 관측 가능한 거래 원장(거래ID 채번, 3값 상태 SUCCESS/FAILED/UNKNOWN, 비동기 적재, 계좌 마스킹) + correlation ID·Prometheus 메트릭·헬스 프로브
 - **Phase 6** — 장애 내성(자체 서킷브레이커·조회성 한정 재시도·거래 데드라인) + UNKNOWN 해소(거래상태조회·망취소 전문 → CANCELED/FAILED 확정, 해소 이력 기록)
+- **Phase 7** — 감사 결함 소탕 + 보안 경화(풀 고갈이 서킷을 열고 원장에 구멍 내던 3중 오작동 수정, 계정계 이상 응답의 원장 공백 차단, 유휴 커넥션 TTL, 채번 자정 재시드, EUC-KR fail-closed 인코딩, API 키 로그·에러 응답 정보 노출 제거, /api/history 관문 편입 — 전/후 실측 대비)
 
 각 단계의 함정·판단·검증은 [docs/ROADMAP.md](docs/ROADMAP.md)와 [docs/VERIFICATION.md](docs/VERIFICATION.md)에 있다.

@@ -195,6 +195,58 @@ class ConnectionPoolTest {
 	}
 
 	@Test
+	@DisplayName("유휴 TTL(Phase 7): 반납 후 TTL이 지난 연결은 재사용하지 않고 폐기 후 새로 연다")
+	void idleTtlExpiresStaleConnection() throws Exception {
+		AtomicInteger ids = new AtomicInteger();
+		java.util.concurrent.atomic.AtomicLong nowNanos = new java.util.concurrent.atomic.AtomicLong();
+		ConnectionPool<FakeConnection> pool = new ConnectionPool<>("test", 2, 1000, 500,
+				() -> new FakeConnection(ids.incrementAndGet()), nowNanos::get);
+
+		FakeConnection first;
+		try (ConnectionPool<FakeConnection>.Lease lease = pool.borrow()) {
+			first = lease.connection();
+		}
+
+		// TTL(500ms) 안에는 재사용된다.
+		nowNanos.addAndGet(400L * 1_000_000);
+		try (ConnectionPool<FakeConnection>.Lease lease = pool.borrow()) {
+			assertThat(lease.connection()).isSameAs(first);
+		}
+
+		// 마지막 반납에서 TTL을 넘겨 놀았다 — isValid()가 true여도(로컬 플래그) 폐기돼야 한다.
+		nowNanos.addAndGet(501L * 1_000_000);
+		try (ConnectionPool<FakeConnection>.Lease lease = pool.borrow()) {
+			assertThat(lease.connection()).isNotSameAs(first);
+			assertThat(lease.reuseCount()).isZero(); // 갓 만든 연결
+		}
+		assertThat(first.closed).isTrue();
+		assertThat(pool.stats().expired()).isEqualTo(1);
+		assertThat(pool.stats().destroyed()).isEqualTo(1);
+		assertThat(pool.stats().created()).isEqualTo(2);
+		pool.close();
+	}
+
+	@Test
+	@DisplayName("유휴 TTL 비활성(0)이면 아무리 오래 놀아도 폐기하지 않는다(Phase 6까지의 동작 보존)")
+	void idleTtlDisabledKeepsOldConnections() throws Exception {
+		AtomicInteger ids = new AtomicInteger();
+		java.util.concurrent.atomic.AtomicLong nowNanos = new java.util.concurrent.atomic.AtomicLong();
+		ConnectionPool<FakeConnection> pool = new ConnectionPool<>("test", 2, 1000, 0,
+				() -> new FakeConnection(ids.incrementAndGet()), nowNanos::get);
+
+		FakeConnection first;
+		try (ConnectionPool<FakeConnection>.Lease lease = pool.borrow()) {
+			first = lease.connection();
+		}
+		nowNanos.addAndGet(3_600_000L * 1_000_000); // 1시간 방치
+		try (ConnectionPool<FakeConnection>.Lease lease = pool.borrow()) {
+			assertThat(lease.connection()).isSameAs(first); // TTL 0 = 비활성
+		}
+		assertThat(pool.stats().expired()).isZero();
+		pool.close();
+	}
+
+	@Test
 	@DisplayName("닫힌 풀은 유휴 연결을 모두 닫고, 이후 borrow는 막는다")
 	void closedPoolRejectsBorrow() throws Exception {
 		AtomicInteger ids = new AtomicInteger();

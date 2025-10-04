@@ -24,6 +24,11 @@ import java.util.function.LongSupplier;
  * 계정계 호출 없이 즉시 거절되고, 각 시도의 성공/실패가 서킷 카운터에 들어간다. 재시도 도중 서킷이
  * 열리면(내 실패가 임계를 채운 경우 포함) 남은 재시도를 접고 <b>원래의 실패를</b> 던진다 —
  * 호출자에겐 "서킷이 열렸다"보다 "계정계가 이렇게 실패했다"가 진짜 원인이다.
+ *
+ * <p><b>서킷은 백엔드 실패만 센다 (Phase 7).</b> {@link PoolExhaustedException}(내부 커넥션 풀 고갈)은
+ * 계정계가 멀쩡한데 게이트웨이 쪽 자원이 모자란 것이라 서킷 실패로 계수하지 않고 그대로 올린다 —
+ * 내부 사정으로 서킷을 열면 멀쩡한 백엔드로 가는 통로까지 끊는 오보가 된다. 재시도도 하지 않는다:
+ * 풀은 이미 borrow-timeout 만큼 기다렸고, 과부하 상황의 재시도는 부하를 증폭할 뿐이다.
  */
 public final class ResilientExecutor {
 
@@ -129,6 +134,12 @@ public final class ResilientExecutor {
 					// 변경성 거래: 재시도 금지. 실패를 그대로 올려 UNKNOWN/FAILED 판정에 맡긴다.
 					throw e;
 				}
+			} catch (PoolExhaustedException e) {
+				// 내부 풀 고갈 — 백엔드 실패가 아니므로 서킷에 계수하지 않고, 재시도 없이 그대로 올린다.
+				// (풀이 이미 borrow-timeout 만큼 기다렸다. 과부하에서의 재시도는 부하 증폭이다.)
+				// 받아 둔 허가는 성공/실패 아닌 "미사용"으로 반납한다(HALF_OPEN 탐침 정원 누수 방지).
+				breaker.onAborted();
+				throw e;
 			} catch (RuntimeException e) {
 				breaker.onFailure();
 				throw e;

@@ -21,6 +21,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * 거래내역(가변 전문) 목업 서버와 클라이언트를 <b>실제 소켓</b>으로 붙여 검증한다.
@@ -163,6 +164,65 @@ class MockTransactionHistoryServerTest {
 		} finally {
 			pool.shutdownNow();
 		}
+	}
+
+	@Test
+	@DisplayName("fault 계좌(레코드 영역 비정합): 쓰레기 응답이 RuntimeException 관통 대신 클라이언트 예외로 감싸인다 (Phase 7)")
+	void faultTruncatedResponseIsWrappedInClientException() {
+		try (TransactionHistoryClient client = new TransactionHistoryClient("127.0.0.1", server.port(), 2000, 3000)) {
+			assertThatThrownBy(() -> client.query(MockTransactionHistoryServer.FAULT_TRUNCATED_ACCOUNT, 3))
+					.isInstanceOf(TransactionHistoryClient.HistoryClientException.class)
+					.hasMessageContaining("왕복은 성공")
+					.hasCauseInstanceOf(io.gwanmun.message.GwanmunParseException.class);
+		}
+	}
+
+	@Test
+	@DisplayName("fault 계좌(쓰레기 건수 필드): 자기설명 검증의 NumberFormatException 도 클라이언트 예외로 감싸인다 (Phase 7)")
+	void faultGarbageCountIsWrappedInClientException() {
+		try (TransactionHistoryClient client = new TransactionHistoryClient("127.0.0.1", server.port(), 2000, 3000)) {
+			assertThatThrownBy(() -> client.query(MockTransactionHistoryServer.FAULT_GARBAGE_COUNT_ACCOUNT, 3))
+					.isInstanceOf(TransactionHistoryClient.HistoryClientException.class)
+					.hasCauseInstanceOf(NumberFormatException.class);
+		}
+	}
+
+	@Test
+	@DisplayName("유휴 TTL(Phase 7): 계정계 재기동 후 TTL이 지난 낡은 소켓은 재사용되지 않고 새 소켓으로 성공한다")
+	void staleConnectionAfterServerRestartIsNotReused() throws Exception {
+		int port = server.port();
+		// TTL 300ms짜리 풀 — 계정계가 재기동하며 닫은 소켓이 로컬에선 멀쩡해 보이는 상황을 재현한다.
+		try (TransactionHistoryClient client = new TransactionHistoryClient("127.0.0.1", port, 2000, 3000, 300)) {
+			HistoryResult before = client.query("12345678901234", 2);
+			assertThat(before.reuseCount()).isZero();
+
+			// 계정계 재기동 — 서버측이 소켓을 닫지만, 클라이언트 풀의 유휴 소켓은 로컬 플래그로는 유효하다.
+			server.close();
+			server = restartOnSamePort(port);
+			Thread.sleep(350); // TTL 경과 — 낡은 소켓이 수명으로 걸러질 조건
+
+			HistoryResult after = client.query("12345678901234", 2);
+			assertThat(after.records()).hasSize(2);
+			assertThat(after.reuseCount()).isZero(); // 낡은 소켓 재사용이 아니라 갓 연 소켓
+			assertThat(client.poolStats().expired()).isEqualTo(1);
+			assertThat(client.poolStats().created()).isEqualTo(2);
+		}
+	}
+
+	/** 같은 포트로 재기동한다. 직전 소켓의 TIME_WAIT 잔재로 bind가 순간 실패할 수 있어 잠깐 재시도. */
+	private static MockTransactionHistoryServer restartOnSamePort(int port) throws Exception {
+		IOException last = null;
+		for (int i = 0; i < 20; i++) {
+			MockTransactionHistoryServer restarted = new MockTransactionHistoryServer(port);
+			try {
+				restarted.start();
+				return restarted;
+			} catch (IOException e) {
+				last = e;
+				Thread.sleep(100);
+			}
+		}
+		throw last;
 	}
 
 	private static byte[] buildRequestBody(String accountNo, int count) {

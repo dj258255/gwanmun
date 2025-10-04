@@ -61,6 +61,35 @@ class TransactionLedgerTest {
 	}
 
 	@Test
+	@DisplayName("적재 실패(unique 위반 등)는 삼키되 dropped 카운터에 남는다 — 유실은 보이는 유실이어야 한다 (Phase 7)")
+	void persistFailureIncrementsDroppedCounter() {
+		SimpleMeterRegistry meters = new SimpleMeterRegistry();
+		LedgerEntryRepository failing = mock(LedgerEntryRepository.class);
+		when(failing.save(any())).thenThrow(new RuntimeException("duplicate key value violates unique constraint"));
+		TransactionLedger failingLedger = new TransactionLedger(failing, meters, Runnable::run);
+
+		failingLedger.record(sample(TransactionStatus.SUCCESS));
+		failingLedger.record(sample(TransactionStatus.SUCCESS));
+
+		assertThat(meters.counter("gwanmun.ledger.dropped", "reason", "persist_error").count())
+				.isEqualTo(2.0);
+	}
+
+	@Test
+	@DisplayName("적재 큐 포화(RejectedExecutionException)도 dropped 카운터에 남는다 (Phase 7)")
+	void queueSaturationIncrementsDroppedCounter() {
+		SimpleMeterRegistry meters = new SimpleMeterRegistry();
+		TransactionLedger saturated = new TransactionLedger(repository, meters, task -> {
+			throw new java.util.concurrent.RejectedExecutionException("큐 포화");
+		});
+
+		assertThatCode(() -> saturated.record(sample(TransactionStatus.SUCCESS)))
+				.doesNotThrowAnyException();
+		assertThat(meters.counter("gwanmun.ledger.dropped", "reason", "queue_full").count())
+				.isEqualTo(1.0);
+	}
+
+	@Test
 	@DisplayName("resolve(): UNKNOWN 거래를 CANCELED로 확정하고 해소 시각·방법을 남긴다 (Phase 6)")
 	void resolveConfirmsUnknownTransaction() {
 		LedgerEntry unknown = new LedgerEntry("GWMNU20260709000000002", "IN01", "123456****1234",

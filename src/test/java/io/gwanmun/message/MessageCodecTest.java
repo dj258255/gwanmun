@@ -174,4 +174,39 @@ class MessageCodecTest {
 				.isInstanceOf(GwanmunParseException.class)
 				.hasMessageContaining("길이 불일치");
 	}
+
+	@Test
+	@DisplayName("EUC-KR 밖 문자(이모지 등): 무음 '?' 치환 대신 빌드가 GwanmunBuildException 으로 거절한다 (Phase 7)")
+	void buildFailsClosedOnUnmappableCharacter() {
+		// 수정 전 getBytes(charset)는 매핑 불가 문자를 조용히 '?'(0x3F)로 바꿔 내보냈다 —
+		// 금융 전문에서 데이터가 소리 없이 바뀌는 무음 손상이다. 이제 fail-closed 로 거절한다.
+		BalanceInquiryResponse res = new BalanceInquiryResponse(
+				"0210", "12345678901234", "IN01", "0", "0000", "정상\uD83D\uDE00처리"); // 가운데 이모지
+		assertThatThrownBy(() -> codec.build(res))
+				.isInstanceOf(GwanmunBuildException.class)
+				.hasMessageContaining("표현할 수 없는 문자");
+	}
+
+	@Test
+	@DisplayName("NUMERIC 필드에 비숫자: 좌측 제로 패딩으로 내보내기 전에 빌드가 거절한다 (Phase 7)")
+	void buildFailsOnNonDigitNumericField() {
+		BalanceInquiryRequest req = new BalanceInquiryRequest(
+				"0200", "GWMNU20260709000000001", "1234ABCD", "IN01", ""); // 계좌(NUMERIC)에 영문
+		assertThatThrownBy(() -> codec.build(req))
+				.isInstanceOf(GwanmunBuildException.class)
+				.hasMessageContaining("accountNo")
+				.hasMessageContaining("NUMERIC");
+	}
+
+	@Test
+	@DisplayName("NUMERIC 빈 문자열은 여전히 허용된다 — 전부 제로 패딩(기존 계약 보존)")
+	void buildAllowsEmptyNumeric() {
+		BalanceInquiryRequest req = new BalanceInquiryRequest(
+				"0200", "GWMNU20260709000000001", "", "IN01", "");
+		byte[] raw = codec.build(req);
+		// 계좌 필드(오프셋 26, 14byte)가 전부 '0' 이어야 한다.
+		for (int i = 26; i < 40; i++) {
+			assertThat(raw[i]).isEqualTo((byte) '0');
+		}
+	}
 }

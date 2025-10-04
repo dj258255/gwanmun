@@ -48,6 +48,8 @@ public class ConnectionPoolMetrics {
 		counter(registry, pool, "gwanmun.pool.opened", client, c -> stats.apply(c).created());
 		counter(registry, pool, "gwanmun.pool.reused", client, c -> stats.apply(c).reused());
 		counter(registry, pool, "gwanmun.pool.destroyed", client, c -> stats.apply(c).destroyed());
+		// Phase 7: 유휴 TTL로 폐기된 수(destroyed의 부분집합) — 낡은 소켓 정리가 실제로 도는지 보인다.
+		counter(registry, pool, "gwanmun.pool.expired", client, c -> stats.apply(c).expired());
 	}
 
 	private static <T> void gauge(MeterRegistry registry, String pool, String name,
