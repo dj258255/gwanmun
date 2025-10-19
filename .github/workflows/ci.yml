@@ -1,0 +1,43 @@
+name: CI
+
+# 로컬에서만 돌던 테스트 147건을 푸시·PR마다 GitHub Actions에서 돌린다.
+# ApplicationModules.verify()(모듈 경계)까지 이 테스트 스위트 안에 있어, 한 번의 실행이
+# 단위·통합·모듈 검증을 모두 덮는다.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 같은 브랜치에 새 커밋이 밀려 오면 진행 중인 실행을 취소한다(러너 낭비 방지).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 체크아웃
+        uses: actions/checkout@v4
+
+      - name: JDK 21 셋업 (툴체인과 동일한 LTS)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Gradle 셋업 (의존성·빌드 캐시)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: 테스트 (verify 포함, 147+건)
+        run: ./gradlew test --no-daemon --console=plain
+
+      - name: 테스트 리포트 업로드 (실패 시 원인 추적용)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: build/reports/tests/test
+          if-no-files-found: ignore
+          retention-days: 7

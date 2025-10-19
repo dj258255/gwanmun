@@ -9,8 +9,8 @@ top to bottom direction
 !include <C4/C4_Component>
 
 Container_Boundary("GwanmunApplication.GwanmunApplication_boundary", "GwanmunApplication", $tags="") {
-  Component(GwanmunApplication.GwanmunApplication.core계정계연동, "core · 계정계 연동", $techn="Module", $descr="", $tags="", $link="")
   Component(GwanmunApplication.GwanmunApplication.message전문코덱, "message · 전문 코덱", $techn="Module", $descr="", $tags="", $link="")
+  Component(GwanmunApplication.GwanmunApplication.core계정계연동, "core · 계정계 연동", $techn="Module", $descr="", $tags="", $link="")
 }
 
 Rel(GwanmunApplication.GwanmunApplication.core계정계연동, GwanmunApplication.GwanmunApplication.message전문코덱, "depends on", $techn="", $tags="", $link="")

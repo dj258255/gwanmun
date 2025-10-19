@@ -114,8 +114,7 @@ class ResilientExecutorTest {
 	@DisplayName("서킷이 이미 열려 있으면 첫 시도 전에 CircuitOpenException — 계정계 호출 0회")
 	void circuitOpenRejectsBeforeFirstAttempt() throws Exception {
 		CircuitBreaker cb = breaker(1);
-		cb.acquire();
-		cb.onFailure(); // 임계 1 → OPEN
+		cb.onFailure(cb.acquire()); // 임계 1 → OPEN
 		ResilientExecutor ex = executor(cb, 1000, 10_000, 2);
 		AtomicInteger calls = new AtomicInteger();
 

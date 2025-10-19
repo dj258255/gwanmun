@@ -749,5 +749,140 @@ POST /api/gateway/balance {"accountNo":"12ab<script>"} → HTTP 400 {"error":"ac
 
 - **A3 — 서킷 stale 결과 귀속**: OPEN 전이 직전에 나가 있던 호출의 늦은 onSuccess/onFailure가 새
   상태에 섞일 수 있다. permit 토큰 방식이 답이지만 난이도 대비 실익이 낮아 이번 소탕에서 제외 —
-  [ROADMAP 감사 백로그](ROADMAP.md)에 기록.
+  [ROADMAP 감사 백로그](ROADMAP.md)에 기록. → **Phase 8에서 수정.**
 - 나머지 백로그(CI·k6 부하 실측·멱등키·EOD 대사 배치·Boot 3.5+)는 ROADMAP 감사 백로그 절 참조.
+
+---
+
+## Phase 8 — CI · A3 서킷 stale 귀속 수정 · k6 부하 실측 · Boot 3.5 업그레이드
+
+Phase 7이 A3(서킷 stale 결과 귀속)를 "난이도 대비 실익이 낮다"며 백로그로 미뤘다. Phase 8은 부하
+테스트를 붙이면서 그 미룬 버그가 실제로 드러났다 — 서킷이 열렸다 닫혔다 하는 15초 부하 창에서 stale
+결과 보고가 **197번** 발생했다. 지어낸 수치 없이, 부하가 드러낸 A3를 고치고 재측정한 기록이다.
+
+### 검증 환경 (실측용 loadtest 프로파일)
+
+부하 실측은 데모용으로 일부러 낮춰 둔 값(풀 4·rate 5)이 인위적 병목이 되지 않게 별도 프로파일을 쓴다.
+목표는 "N TPS 달성"이 아니라 **한계 TPS·P95·병목 지점**을 드러내는 것이다(우아한형제들식 피크 역산).
+
+```
+./gradlew bootRun --args='--spring.profiles.active=loadtest'
+```
+
+`loadtest` 프로파일(application.yml, 재현 가능하게 명시): 커넥션 풀 max-size 100, borrow-timeout
+1000ms, 조회성 재시도 0(순수 1회 왕복 처리량), 거래 데드라인 2000ms, connect-timeout 300ms,
+read-timeout 1000ms, rate-capacity 2,000,000(유량제어 비활성화), 목업 지연 0.
+
+**주의**: k6·앱·목업이 한 머신에서 CPU를 나눠 쓰므로 아래 수치는 **결합 시스템의 천장**이지 순수
+서버 성능이 아니다. 그래도 상대 비교(게이트웨이 vs 직접, 서킷 on vs off)는 유효하다.
+
+### 1) A3 — 서킷 stale 결과 귀속: 결정론적 회귀(수정 전/후)
+
+`CircuitBreakerTest`에 시계·상태를 주입한 결정론적 재현 3건을 넣었다. 세대 가드를 무력화해(수정 전
+동작 재현) 돌리면 **정확히 A3 두 건만** 빨갛게 뜬다:
+
+```
+CircuitBreakerTest > A3: CLOSED에서 나간 늦은 성공은 HALF_OPEN을 거짓으로 닫지 못한다  FAILED
+CircuitBreakerTest > A3: CLOSED에서 나간 늦은 실패는 HALF_OPEN 탐침 정원을 깎거나 서킷을 다시 열지 못한다  FAILED
+8 tests completed, 2 failed
+```
+
+- **수정 전**: CLOSED에서 나간 호출이 OPEN→HALF_OPEN 전이 뒤 늦게 돌아오면, HALF_OPEN 상태만 보고
+  성공은 서킷을 거짓으로 닫고(회복 확인 안 했는데), 실패는 탐침 정원을 깎고 서킷을 다시 연다.
+- **수정 후**: `acquire()`가 세대(generation)를 담은 permit을 발급하고, 결과 보고는 permit 세대가
+  현재 세대와 같을 때만 상태에 반영한다. stale이면 무시(+`staleResultsTotal` 계수). 실행기는
+  받은 permit을 `finally`로 반드시 정산한다(Error 시 탐침 정원 누수 방지).
+
+### 2) A3가 부하에서 실제로 발생했다는 증거 (실제 출력)
+
+시나리오 (c)의 서킷 플래핑 부하(죽은 백엔드, HALF_OPEN 탐침이 붙었다 떨어졌다)를 15초 돌린 뒤 서킷
+상태:
+
+```
+GET /api/circuit/stats → coreBanking:
+  {"state":"OPEN","openedTotal":2,"rejectedTotal":141268,"staleResultsTotal":197}
+```
+
+**staleResultsTotal=197** — stale 결과가 이론이 아니라 실제로, 그것도 15초에 197번 도착했다. 수정
+전이라면 이 197건이 전이·탐침 정원에 잘못 섞여 서킷 상태가 오염됐을 것이다. 수정 후에는 전부 무시돼
+서킷이 일관되게 동작한다(openedTotal=2 — 열림 1 + HALF_OPEN 탐침 실패 재개방 1, 상식적인 값).
+`gwanmun_circuit_stale_results_total`로 /actuator/prometheus에도 노출.
+
+### 3) 부하 실측 (a) — 한계 TPS · P95 곡선 (정상 백엔드, k6 실제 출력)
+
+`k6 run -e RATE=<tps> -e DURATION=15s loadtest/gw_balance.js` 를 도착률을 올려 가며 반복:
+
+| 목표 TPS | 달성 req/s | p50 | p95 | max | 실패율 | dropped_iter |
+|---:|---:|---:|---:|---:|---:|---:|
+| 500 | 500 | 0.49ms | 0.98ms | 31ms | 0% | 0 |
+| 1,000 | 1,000 | 0.37ms | 0.50ms | 8.6ms | 0% | 0 |
+| 2,000 | 2,000 | 0.31ms | 0.47ms | 14ms | 0% | 0 |
+| 4,000 | 4,000 | 0.26ms | 0.42ms | 11ms | 0% | 0 |
+| 6,000 | 6,000 | 0.27ms | 0.68ms | 21ms | 0% | 0 |
+| 8,000 | 7,914 | 0.31ms | 4.99ms | 164ms | 0% | 1,271 |
+| 10,000 | 9,986 | 0.31ms | 3.28ms | 41ms | 0% | 202 |
+| 12,000 | 11,922 | 0.42ms | 11.6ms | 78ms | 0% | 1,169 |
+| 15,000 | 14,188 | 3.97ms | 36.4ms | 137ms | 0% | 12,002 |
+
+- **무릎은 ~10–12k req/s**. ~6k까지 p95가 1ms 밑을 유지하다가, 그 위에서 꺾이고 12k를 넘기면 k6가
+  목표 도착률을 못 채운다(dropped_iterations 급증).
+- **실패율은 전 구간 0%**. 게이트웨이는 과부하에서 틀린 답을 내는 게 아니라 **지연으로 degrade**한다.
+
+### 4) 부하 실측 (b) — 게이트웨이 경유 오버헤드 (실제 출력)
+
+같은 클라이언트 코드(`CoreBankingClient`)로 목업에 직접 붙어 순수 TCP 왕복만 잰 기준선
+(`./gradlew runDirectBenchmark`) vs 게이트웨이 경유(k6):
+
+```
+직접 왕복(1스레드, 20k회):  p50=0.048ms p95=0.079ms mean=0.055ms  (직렬 18,276 req/s)
+직접 왕복(16스레드):        39,231 req/s  p50=0.331ms
+직접 왕복(50스레드):        44,465 req/s  p50=1.153ms
+게이트웨이(비포화, 4k/s):    p50=0.264ms
+```
+
+- **게이트웨이 경유 오버헤드 ≈ 0.21ms/req** (게이트웨이 p50 0.26ms − 직접 왕복 p50 0.05ms). 이 값이
+  HTTP 파싱 + 관문 필터 체인(인증·라우팅·유량제어) + 전문 build + 원장 비동기 적재 + JSON 직렬화의 값.
+- **처리량 천장의 병목은 TCP 풀이 아니라 웹 계층**: 순수 커넥터는 ~40–44k req/s를 내는데 REST
+  게이트웨이 전체 경로는 ~12k req/s에서 막힌다. 요청당 하나의 서블릿 스레드가 동기 TCP 왕복 동안
+  묶이는 구조(blocking thread-per-request)가 한계. 풀은 이 지연대에서 동시 소켓 3개면 충분해 병목이
+  아니다.
+
+### 5) 부하 실측 (c) — 빠른 실패의 값 (서킷 OPEN, 실제 출력)
+
+도달 불가 백엔드(192.0.2.1, connect-timeout 300ms 확정)를 두고 **서킷 off vs on**을 대비:
+
+```
+서킷 OFF(threshold 1억 — 안 열림):  351 req/s   p50=8.11s  p95=8.98s  실패 100%  (consecutiveFailures 7656)
+서킷 ON(threshold 3):             9,425 req/s  p50=0.68ms p95=95.9ms  즉시 거절 (rejected 141,268, opened 2)
+```
+
+- **서킷 없으면 죽은 백엔드가 게이트웨이를 같이 눕힌다**: 모든 요청이 300ms connect 타임아웃을
+  기다리며 서블릿 스레드를 붙잡아, 처리량이 351 req/s로 붕괴하고 지연이 **8초**로 치솟는다.
+- **서킷 있으면 즉시 거절**: 3연속 실패로 열린 뒤 나머지는 계정계 호출 없이 튕겨 내 처리량 27배
+  (351→9,425 req/s), p50 지연은 8.11s→0.68ms(약 1.2만 배)로 떨어진다. 빠른 실패는 처리량을 높이려는
+  게 아니라 **스레드를 죽은 백엔드에 헌납하지 않으려는** 장치다.
+
+### 6) CI · LICENSE · Boot 3.5 업그레이드
+
+- **CI**: `.github/workflows/ci.yml` — push·PR마다 JDK 21에서 `./gradlew test`(150건, verify() 포함).
+  로컬에서만 돌던 테스트가 이제 원격에서도 강제된다. README에 배지.
+- **LICENSE**: MIT 파일 추가(공개 레포인데 부재였다).
+- **Spring Boot 3.3.5 → 3.5.4 + Spring Modulith 1.2.7 → 1.4.3**: 3.3.x OSS 지원 종료 대응.
+  **채택**. 유일한 파손은 문서 생성 API 한 줄(`Documenter.withOutputFolder(String)` →
+  `Documenter.Options.withOutputFolder(String)`) — 적응 후 **150건 전부 그린 + verify() 그린 + 앱
+  기동·잔액조회·prometheus 정상**. rabbit hole이 아니라 원포인트 수정이라 강행이 아닌 채택.
+
+### 7) 테스트 — 150건 그린 (기존 147 + A3 회귀 3)
+
+```
+./gradlew test   →  BUILD SUCCESSFUL, tests=150 failures=0  (Boot 3.5.4)
+```
+
+- `CircuitBreakerTest` (+3) — A3 stale 성공/실패 무시(결정론적), 정상(동일 세대) 결과는 그대로 반영.
+- `ResilientExecutorTest`·기존 서킷 테스트 — permit 시그니처로 갱신, 전부 그린.
+
+### 잔여 (정직하게 안 함)
+
+- **멱등키·EOD 대사 배치·DBTower 연계**는 ROADMAP 감사 백로그에 그대로 둔다.
+- 부하 수치는 단일 머신 결합 천장 — 분리된 부하 발생기·전용 서버에서의 절대 성능은 측정하지 않았다
+  (상대 비교가 이번 목적이었다). "금융권 표준 P95" 같은 공개 근거 없는 수치는 지어내지 않는다.

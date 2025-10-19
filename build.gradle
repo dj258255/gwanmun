@@ -1,6 +1,6 @@
 plugins {
 	id 'java'
-	id 'org.springframework.boot' version '3.3.5'
+	id 'org.springframework.boot' version '3.5.4'
 	id 'io.spring.dependency-management' version '1.1.6'
 }
 
@@ -20,10 +20,10 @@ repositories {
 }
 
 // Spring Modulith BOM으로 모듈리스 아티팩트 버전을 한 곳에서 고정한다.
-// Spring Boot 3.3.5와 호환되는 계열은 1.2.x (1.3.x는 Boot 3.4 대상).
+// Spring Boot 3.5.x와 짝을 이루는 계열은 1.4.x.
 dependencyManagement {
 	imports {
-		mavenBom 'org.springframework.modulith:spring-modulith-bom:1.2.7'
+		mavenBom 'org.springframework.modulith:spring-modulith-bom:1.4.3'
 	}
 }
 
@@ -74,4 +74,16 @@ tasks.register('runMockCore', JavaExec) {
 	}
 	classpath = sourceSets.main.runtimeClasspath
 	mainClass = 'io.gwanmun.core.MockCoreBankingServer'
+}
+
+// 부하 실측 시나리오 (b) — 게이트웨이 껍데기를 벗고 목업 계정계에 직접 붙어 순수 TCP 왕복만 잰다.
+//   ./gradlew runDirectBenchmark --args="127.0.0.1 9099 20000 2000 1"
+tasks.register('runDirectBenchmark', JavaExec) {
+	group = 'application'
+	description = '목업 계정계에 직접 붙는 왕복 벤치마크(게이트웨이 경유 오버헤드의 기준선)'
+	javaLauncher = javaToolchains.launcherFor {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+	classpath = sourceSets.main.runtimeClasspath
+	mainClass = 'io.gwanmun.core.DirectCoreBenchmark'
 }

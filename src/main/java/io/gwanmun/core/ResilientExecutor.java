@@ -111,8 +111,9 @@ public final class ResilientExecutor {
 				break;
 			}
 
+			CircuitBreaker.Permit permit;
 			try {
-				breaker.acquire();
+				permit = breaker.acquire();
 			} catch (CircuitOpenException e) {
 				if (last != null) {
 					// 재시도 도중 서킷이 열림 — 원인이었던 실패를 그대로 던진다.
@@ -121,14 +122,19 @@ public final class ResilientExecutor {
 				throw e;
 			}
 
+			// 받은 허가는 반드시 정산한다. 성공/실패/중단 어느 분기로도 못 갚고 빠져나가면(Error 등)
+			// finally가 미사용으로 반납한다 — HALF_OPEN 탐침 정원 누수 방지(Phase 8).
+			boolean settled = false;
 			try {
 				// 이번 시도의 read 타임아웃 = min(설정값, 데드라인까지 남은 시간).
 				int attemptTimeoutMs = (int) Math.min(readTimeoutMs, remainingMs);
 				T result = attempt.call(attemptTimeoutMs);
-				breaker.onSuccess();
+				breaker.onSuccess(permit);
+				settled = true;
 				return result;
 			} catch (IOException e) {
-				breaker.onFailure();
+				breaker.onFailure(permit);
+				settled = true;
 				last = e;
 				if (!kind.retryable()) {
 					// 변경성 거래: 재시도 금지. 실패를 그대로 올려 UNKNOWN/FAILED 판정에 맡긴다.
@@ -138,11 +144,18 @@ public final class ResilientExecutor {
 				// 내부 풀 고갈 — 백엔드 실패가 아니므로 서킷에 계수하지 않고, 재시도 없이 그대로 올린다.
 				// (풀이 이미 borrow-timeout 만큼 기다렸다. 과부하에서의 재시도는 부하 증폭이다.)
 				// 받아 둔 허가는 성공/실패 아닌 "미사용"으로 반납한다(HALF_OPEN 탐침 정원 누수 방지).
-				breaker.onAborted();
+				breaker.onAborted(permit);
+				settled = true;
 				throw e;
 			} catch (RuntimeException e) {
-				breaker.onFailure();
+				breaker.onFailure(permit);
+				settled = true;
 				throw e;
+			} finally {
+				if (!settled) {
+					// Error·미분류 Throwable로 위 분기를 못 탄 경우 — 허가를 미사용으로 반납한다.
+					breaker.onAborted(permit);
+				}
 			}
 		}
 

@@ -272,19 +272,67 @@ permit 토큰 방식)은 난이도 대비 실익이 낮아 이번엔 안 했다 
 
 ---
 
+## Phase 8 — CI · A3 서킷 stale 귀속 수정 · k6 부하 실측 · Boot 3.5 (완료)
+
+**상황**: 테스트 147건이 로컬에서만 돌고, 부하 앞에서 서킷이 어떻게 되는지 아무도 실측한 적이 없다.
+Phase 7은 A3(서킷 stale 결과 귀속)를 "난이도 대비 실익이 낮다"며 백로그로 미뤘다 — 하지만 그건
+**부하를 걸어 본 적이 없어서** 실익을 몰랐던 것이기도 하다.
+
+**한계 인지**:
+- **A3는 동시성·전이가 겹쳐야 드러난다.** curl 동시 8건 수준으로는 안 보인다. 서킷이 열렸다 닫혔다
+  하는 부하 창에서, CLOSED에서 나간 호출이 OPEN→HALF_OPEN 전이 뒤에 늦게 돌아오면 그 결과가 새
+  상태에 잘못 귀속된다(성공이 HALF_OPEN을 거짓으로 닫거나, 실패가 탐침 정원을 음수로 깎거나).
+- **버그가 수치를 오염시킨다.** A3를 고치기 전에 부하를 재면 서킷 관련 수치가 못 믿을 값이 된다 —
+  A3부터 고치고 재야 한다.
+- **부하 목표는 "N TPS 달성"이 아니다(우아한형제들식).** 한계 TPS·P95·병목 지점을 드러내는 게 목적.
+
+**판단**:
+- **A3 — permit 토큰(세대) 방식.** `acquire()`가 상태 세대를 담은 permit을 발급하고,
+  onSuccess/onFailure/onAborted가 permit을 들고 와 세대가 일치할 때만 상태에 반영한다. 상태가 전이할
+  때마다 세대가 올라, 이전 세대에서 나간 늦은 결과는 stale로 무시된다. 실행기는 받은 permit을
+  `finally`로 정산해 Error 시에도 탐침 정원이 새지 않게 한다.
+- **부하 하네스.** 실측용 `loadtest` 프로파일(풀·rate 상향, 목업 지연 0, 재시도 0)을 별도로 두고,
+  (a) 정상 부하 상향으로 한계·P95 곡선 (b) 목업에 직접 붙는 벤치마크(`CoreBankingClient` 재사용)로
+  게이트웨이 경유 오버헤드 (c) 죽은 백엔드에서 서킷 off/on 대비로 빠른 실패의 값을 잰다. A3 수정 후 측정.
+- **CI·LICENSE**는 가장 싸고 큰 격차 — GitHub Actions에서 테스트를 강제하고, 공개 레포에 빠진 MIT 추가.
+- **Boot 3.5 업그레이드**는 마지막에, 깨지면 되돌리고 정직히 남긴다는 전제로 시도.
+
+**개선**: `CircuitBreaker.Permit`(세대 토큰)+stale 무시+`staleResultsTotal` 메트릭,
+`ResilientExecutor`의 finally 정산, `loadtest` 프로파일, `DirectCoreBenchmark`(core), k6 스크립트
+(`loadtest/gw_balance.js`), `.github/workflows/ci.yml`, `LICENSE`, Boot 3.5.4 + Modulith 1.4.3.
+
+**실측**:
+- **A3 결정론적 회귀**: 세대 가드를 무력화하면 정확히 A3 두 건만 실패(수정 전/후 대비). 부하 실측
+  (c)에서 **staleResultsTotal=197**(15초) — stale 귀속이 이론이 아니라 실제로 벌어졌음이 계수로 증명됐다.
+- **한계 TPS·P95**: 무릎 ~10–12k req/s, ~6k까지 p95<1ms, 실패율 전 구간 0%(과부하는 지연으로 degrade).
+- **게이트웨이 오버헤드 ≈ 0.21ms/req**. 처리량 병목은 TCP 풀이 아니라 웹 계층(순수 커넥터 ~40k vs 전체
+  경로 ~12k req/s — blocking thread-per-request).
+- **빠른 실패의 값**: 죽은 백엔드에서 서킷 off는 351 req/s·p50 8.11s로 붕괴, on은 9,425 req/s·p50
+  0.68ms로 즉시 거절(27배·약 1.2만 배).
+- **Boot 3.5.4 채택**: 파손은 문서 API 한 줄뿐, 적응 후 150건 그린 + verify() 그린 + 앱 기동 정상.
+- `./gradlew test` **150건 그린**(기존 147 + A3 회귀 3), `verify()` 그린. [VERIFICATION Phase 8절](VERIFICATION.md).
+
+**잔여**: 부하 수치는 단일 머신 결합 천장(분리된 부하 발생기·전용 서버 절대 성능은 미측정 — 상대 비교가
+목적). 멱등키·EOD 대사 배치·DBTower 연계는 백로그에 남는다.
+
+---
+
 ## 감사 백로그 — 다음에 할 것 / 안 하기로 한 것
 
 Phase 7 감사에서 나온 잔여를 한 곳에 모은다. "언젠가"가 아니라 할 것과 안 할 것을 가른다.
 
+### 완료 (Phase 8에서 소진)
+- **[x] CI + LICENSE + k6 부하 실측**: 테스트 150건을 GitHub Actions로 돌리고(verify 포함),
+  한계 TPS(~10–12k)·P95·게이트웨이 오버헤드(~0.21ms)·빠른 실패의 값을 k6로 수치화. MIT LICENSE 추가.
+- **[x] A3 — 서킷 stale 결과 귀속**: acquire()가 세대 permit을 발급하고 onSuccess/onFailure/onAborted가
+  토큰을 들고 와, 전이 이전에 나갔던 호출의 늦은 결과를 stale로 무시. 부하에서 staleResultsTotal=197로
+  실재 확인. 실행기 finally 정산까지.
+- **[x] Spring Boot 3.5+ 업그레이드**: 3.5.4 + Modulith 1.4.3 **채택**(문서 API 한 줄만 적응, 150건 그린).
+
 ### 다음에 할 것
-- **CI + LICENSE + k6 부하 실측**: 테스트 147건을 GitHub Actions로 돌리고, 풀 고갈·서킷 임계를
-  k6 부하로 수치화(지금은 curl 동시 8건 수준). LICENSE 파일 누락도 함께.
-- **A3 — 서킷 stale 결과 귀속**: acquire()가 permit 토큰을 발급하고 onSuccess/onFailure가 토큰을
-  들고 오게 해, OPEN/HALF_OPEN 전이 이전에 나갔던 호출의 결과가 새 상태를 오염시키지 않게 한다.
 - **멱등키(Idempotency-Key)**: 호출자 재전송을 게이트웨이가 구분하는 흐름 — IETF
   draft-ietf-httpapi-idempotency-key-header 참조.
 - **EOD 대사 배치**: UNKNOWN을 주기적으로 훑어 상태조회·망취소로 해소하는 스케줄러(지금은 수동 API).
-- **Spring Boot 3.5+ 업그레이드**: 3.3.x OSS 지원 종료 대응.
 - **DBTower 연계**: 거래 원장·서킷 상태를 관제가 관측하는 느슨한 연결.
 
 ### 안 하기로 한 것

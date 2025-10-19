@@ -110,3 +110,37 @@ spring:
     username: gwanmun
     password: gwanmun
     driver-class-name: org.postgresql.Driver
+
+---
+# 부하 실측 프로파일 (Phase 8) — `--spring.profiles.active=loadtest`.
+# 목표는 "N TPS 달성"이 아니라 한계 TPS·P95·병목 지점을 드러내는 것이라, 데모용으로 일부러 낮춰
+# 두었던 값(풀 4·rate 5)을 실측에 방해되지 않게 올린다. 이 값을 문서에 명시해 재현 가능하게 한다.
+spring:
+  config:
+    activate:
+      on-profile: loadtest
+gwanmun:
+  core:
+    # 지연 계좌(9999...)만 영향받는 값이지만 실측 프로파일임을 분명히 하려고 0으로 둔다.
+    mock:
+      delay-ms: 0
+    # 연결 실패를 빨리 감지하려고 짧게(서킷 OPEN 시나리오에서 죽은 포트로 붙일 때 빠른 실패).
+    connect-timeout-ms: 300
+    read-timeout-ms: 1000
+    pool:
+      # 풀이 인위적 병목이 되지 않게 올린다 — 한계가 풀인지 다른 것인지 가리려는 목적.
+      max-size: 100
+      borrow-timeout-ms: 1000
+      idle-ttl-ms: 30000
+    resilience:
+      transaction-deadline-ms: 2000
+      # 부하 중 재시도가 처리량을 왜곡하지 않게 조회성 재시도도 끈다(순수 1회 왕복 처리량 측정).
+      retry-max: 0
+      circuit:
+        failure-threshold: 3
+        open-wait-ms: 10000
+        half-open-max-probes: 1
+  gateway:
+    # 유량제어가 부하를 막지 않게 크게 — rate limit은 Phase 3에서 이미 검증했고, 여기선 방해 요소다.
+    rate-capacity: 2000000
+    rate-refill-per-minute: 600000000

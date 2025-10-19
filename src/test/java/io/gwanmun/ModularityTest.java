@@ -25,8 +25,10 @@ class ModularityTest {
 	@Test
 	@DisplayName("모듈 다이어그램(PlantUML/C4) 생성 — docs/modules 에 남긴다")
 	void writesModuleDocumentation() {
-		new Documenter(modules)
-				.withOutputFolder("docs/modules")
+		// Modulith 1.4에서 출력 폴더 지정이 Documenter.withOutputFolder(String)(체이닝)에서
+		// 생성자의 Documenter.Options로 옮겨졌다(Boot 3.5 업그레이드에 맞춘 적응).
+		Documenter.Options options = Documenter.Options.defaults().withOutputFolder("docs/modules");
+		new Documenter(modules, options)
 				.writeModulesAsPlantUml()
 				.writeIndividualModulesAsPlantUml()
 				.writeModuleCanvases();

@@ -19,6 +19,7 @@ import java.util.function.ToLongFunction;
  *   <li>{@code gwanmun_circuit_consecutive_failures{circuit=...}} — 연속 실패 수 (게이지)</li>
  *   <li>{@code gwanmun_circuit_opened_total{circuit=...}} — OPEN으로 전이한 누적 횟수</li>
  *   <li>{@code gwanmun_circuit_rejected_total{circuit=...}} — OPEN/탐침 정원 초과로 즉시 거절한 누적 호출 수</li>
+ *   <li>{@code gwanmun_circuit_stale_results_total{circuit=...}} — 세대 불일치로 무시한 stale 결과 보고 수(A3, Phase 8)</li>
  *   <li>{@code gwanmun_core_retries_total{backend=...}} — 조회성 거래의 누적 재시도 횟수</li>
  * </ul>
  */
@@ -43,6 +44,8 @@ public class CircuitBreakerMetrics {
 				c -> stats.apply(c).openedTotal());
 		counter(registry, "circuit", circuit, "gwanmun.circuit.rejected", client,
 				c -> stats.apply(c).rejectedTotal());
+		counter(registry, "circuit", circuit, "gwanmun.circuit.stale.results", client,
+				c -> stats.apply(c).staleResultsTotal());
 		counter(registry, "backend", circuit, "gwanmun.core.retries", client,
 				c -> (double) retries.applyAsLong(c));
 	}
