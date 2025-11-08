@@ -56,6 +56,13 @@ public class LedgerEntry {
 	@Column(length = 8)
 	private String responseCode;
 
+	/**
+	 * 거래 금액(원). 잔액조회는 계정계가 돌려준 잔액을 싣는다 — EOD 대사에서 계정계측 기록과
+	 * 대조할 유일한 수치다(Phase 9). 금액 개념이 없는 거래(입력 오류·거래내역 등)는 null.
+	 */
+	@Column
+	private Long amount;
+
 	/** 실패·미확인 사유(짧게 자름). */
 	@Column(length = 200)
 	private String detail;
@@ -86,7 +93,8 @@ public class LedgerEntry {
 
 	public LedgerEntry(String transactionId, String txCode, String accountMasked,
 			TransactionStatus status, String responseCode, String detail,
-			Instant requestedAt, Instant respondedAt, long elapsedMs, String correlationId) {
+			Instant requestedAt, Instant respondedAt, long elapsedMs, String correlationId,
+			Long amount) {
 		this.transactionId = transactionId;
 		this.txCode = txCode;
 		this.accountMasked = accountMasked;
@@ -97,6 +105,7 @@ public class LedgerEntry {
 		this.respondedAt = respondedAt;
 		this.elapsedMs = elapsedMs;
 		this.correlationId = correlationId;
+		this.amount = amount;
 	}
 
 	/**

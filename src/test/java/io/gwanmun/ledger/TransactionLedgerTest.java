@@ -94,7 +94,7 @@ class TransactionLedgerTest {
 	void resolveConfirmsUnknownTransaction() {
 		LedgerEntry unknown = new LedgerEntry("GWMNU20260709000000002", "IN01", "123456****1234",
 				TransactionStatus.UNKNOWN, null, "Read timed out",
-				Instant.now(), Instant.now(), 3011, "cid-test-0002");
+				Instant.now(), Instant.now(), 3011, "cid-test-0002", null);
 		when(repository.findByTransactionId("GWMNU20260709000000002"))
 				.thenReturn(Optional.of(unknown));
 		when(repository.save(any())).thenAnswer(inv -> inv.getArgument(0));
@@ -113,7 +113,7 @@ class TransactionLedgerTest {
 	void resolveRejectsNonUnknown() {
 		LedgerEntry success = new LedgerEntry("GWMNU20260709000000003", "IN01", "123456****1234",
 				TransactionStatus.SUCCESS, "0000", null,
-				Instant.now(), Instant.now(), 3, "cid-test-0003");
+				Instant.now(), Instant.now(), 3, "cid-test-0003", null);
 		when(repository.findByTransactionId("GWMNU20260709000000003"))
 				.thenReturn(Optional.of(success));
 

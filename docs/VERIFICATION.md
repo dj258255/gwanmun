@@ -886,3 +886,143 @@ GET /api/circuit/stats → coreBanking:
 - **멱등키·EOD 대사 배치·DBTower 연계**는 ROADMAP 감사 백로그에 그대로 둔다.
 - 부하 수치는 단일 머신 결합 천장 — 분리된 부하 발생기·전용 서버에서의 절대 성능은 측정하지 않았다
   (상대 비교가 이번 목적이었다). "금융권 표준 P95" 같은 공개 근거 없는 수치는 지어내지 않는다.
+
+---
+
+## Phase 9 — 멱등키 · EOD 대사 배치 · DBTower 연계
+
+Phase 8까지 남은 두 구멍을 채운다 — (A) 호출자 재전송을 게이트웨이가 구분해 **이중 거래 0**을
+보장하고, (B) 원장을 계정계 당일 처리내역과 **전량 대조**해 검증된 진실로 만든다. 덤으로 원장 PG를
+DBTower 관제 대상으로 등록 가능하게 준비했다.
+
+### 검증 환경
+
+```
+docker compose up -d          # 원장 PostgreSQL 16 (호스트 25432, pg_stat_statements 로드)
+./gradlew bootRun --args='--spring.profiles.active=postgres'   # 8090 + 내장 목업(9099 잔액·9098 내역·9097 대사)
+```
+
+- 대사 포트 9097은 잔액조회 계정계(9099)와 **같은 인메모리 원장을 공유**하는 한 프로세스가 함께 연다.
+- 아래는 전부 라이브 실측(curl·psql 실제 출력)이다.
+
+### 1) 멱등키 — 같은 키로 두 번, 이중 거래 0 (curl + psql 실제 출력)
+
+```
+# CALL 1 (Idempotency-Key: idem-...-live)
+HTTP/1.1 200
+X-Idempotent-Replay: false
+{"transactionId":"GWMNU20260709325692461","ledgerStatus":"SUCCESS", ... "elapsedMs":6}
+
+# CALL 2 (같은 키)
+HTTP/1.1 200
+X-Idempotent-Replay: true
+{"transactionId":"GWMNU20260709325692461","ledgerStatus":"SUCCESS", ... "elapsedMs":6}   # 원응답 그대로(재실행 안 함)
+```
+
+- 둘째 응답은 **같은 tranId·같은 본문**(elapsedMs=6까지 동일) — 재실행이 아니라 저장된 원응답 재반환.
+- 계정계(목업) 로그의 "요청 수신"은 이 tranId에 대해 **1회**뿐. 원장에도 1행:
+
+```
+gwanmun=# SELECT count(*), max(status), max(amount) FROM transaction_ledger WHERE transaction_id='GWMNU20260709325692461';
+ count | max     |    max
+-------+---------+------------
+     1 | SUCCESS | 6879445000       ← 재전송이 새 거래를 안 만들었다(이중 거래 0)
+
+gwanmun=# SELECT idem_key, method, path, state, http_status, tran_id FROM idempotency_key ORDER BY id DESC LIMIT 1;
+   idem_key ...   | method |         path         |   state   | http_status |        tran_id
+-----------------+--------+----------------------+-----------+-------------+------------------------
+ idem-...-live    | POST   | /api/gateway/balance | COMPLETED |         200 | GWMNU20260709325692461
+```
+
+**처리 중 동시 재요청 → 409** (지연 계좌로 첫 요청이 붙잡힌 사이 두 번째):
+
+```
+req1 HTTP 504  {"...","ledgerStatus":"UNKNOWN", ...}                          # 처리 중(지연 계좌)
+req2 HTTP 409  {"error":"같은 멱등키의 요청이 처리 중입니다. 잠시 후 결과를 조회하세요."}   # 동시 재요청 차단
+```
+
+**같은 키에 다른 본문 → 422** (멱등키 재사용 불가):
+
+```
+HTTP/1.1 422  {"error":"같은 멱등키에 다른 요청 본문입니다. 멱등키를 재사용할 수 없습니다."}
+```
+
+동시성의 열쇠는 앱 락이 아니라 **DB 유니크 제약**(`uq_idem_key_method_path`)이다 — 먼저 INSERT에
+성공한 쪽만 PROCEED, 진 쪽은 제약 위반을 잡아 재조회로 IN_PROGRESS를 본다(409). 내부 포화 503은
+일시 실패라 키를 놓아준다(같은 키로 재시도 가능).
+
+### 2) EOD 대사 — 4유형 분류 + UNKNOWN 자동 해소 (curl + psql 실제 출력)
+
+통제된 5건을 심고(정상 / 금액오염 / 원장삭제(계정계엔 존재) / 지연 UNKNOWN / 원장 단독) 대사 실행:
+
+```
+POST /api/reconciliation/run?date=20260709  → HTTP 200
+counts: {"MATCH":2, "MISMATCH":1, "LEDGER_ONLY":1, "CORE_ONLY":1, "UNKNOWN_RESOLVED":1}   (원장 4건, 계정계 4건)
+
+CORE_ONLY   GWMNU...983  ledger=(없음)   core=579344000    :: 계정계 처리 기록만 있고 원장에 없음(누락)
+LEDGER_ONLY GWMNU...999  ledger=SUCCESS  core=None         :: 계정계에 처리 기록 없음(원장은 SUCCESS)
+MATCH       GWMNU...984  ledger=CANCELED core=7577976000   :: 대사 자동 해소: UNKNOWN → CANCELED(망취소) · 양쪽 취소 일치
+MATCH       GWMNU...981  ledger=SUCCESS  core=2338584000   :: 양쪽있음 · 금액 일치
+MISMATCH    GWMNU...982  ledger=5958464111  core=5958464000 :: 금액 상이(원장 vs 계정계)
+```
+
+지연 계좌가 만든 UNKNOWN이 대사 중 상태조회→망취소로 **CANCELED 자동 확정**됐고, 계정계도 취소로
+뒤집혀 일치로 수렴한다. 원장·대사 이력 psql 실측:
+
+```
+gwanmun=# SELECT transaction_id, status, resolution_method FROM transaction_ledger WHERE transaction_id='GWMNU...984';
+ GWMNU...984 | CANCELED | NET_CANCEL       ← 대사가 자동 해소
+
+gwanmun=# SELECT settle_date, match_count, mismatch_count, ledger_only_count, core_only_count, unknown_resolved_count FROM reconciliation_run ORDER BY id DESC LIMIT 1;
+ 20260709 | 2 | 1 | 1 | 1 | 1
+```
+
+실측 중 드러난 순서 함정: 자동 해소의 **망취소는 계정계 기록도 바꾼다**(정상→취소). 그래서 계정계
+당일 처리내역 스냅샷은 해소 "이후"에 떠야 양쪽이 같은 시점을 본다 — 스냅샷을 먼저 뜨면 방금 취소한
+거래가 계정계 쪽엔 아직 "정상"으로 남아 억울한 MISMATCH가 된다(순서를 해소→스냅샷→분류로 고정).
+
+### 3) DBTower 연계 — 원장 PG를 관제 대상으로 (psql 실제 출력)
+
+원장 PG를 [DBTower](https://github.com/dj258255/dbtower)의 인스턴스로 등록 가능하게 준비하고,
+관제가 볼 수치를 그 계정으로 실제 조회했다:
+
+```
+# pg_stat_statements 로드 + 최소권한 모니터 계정
+shared_preload_libraries | pg_stat_statements
+CREATE EXTENSION pg_stat_statements;
+CREATE ROLE dbtower_monitor LOGIN ...; GRANT pg_read_all_stats TO dbtower_monitor;
+
+# 모니터 계정 접속(등록 시 health check와 동일)
+$ PGPASSWORD=... psql -U dbtower_monitor -d gwanmun -c "SELECT version();"
+  PostgreSQL 16.14 ...                                        # 접속 OK
+
+# 원장 insert 트래픽 후, 모니터 계정으로 pg_stat_statements 조회(=DBTower query-stats가 보는 것)
+ calls | mean_ms |                         query
+-------+---------+------------------------------------------------------------
+     5 |   0.820 | insert into transaction_ledger (account_masked,amount,corr
+```
+
+등록 body·구성도·정직한 경계는 [docs/DBTOWER-INTEGRATION.md](DBTOWER-INTEGRATION.md). DBTower 앱
+자체를 기동해 등록 API를 부르진 않았고, 대상 DB 준비 + 관제가 볼 수치를 모니터 계정으로 실측하는
+데까지다.
+
+### 4) 테스트 — 168건 그린 (기존 150 + Phase 9 18)
+
+```
+./gradlew test   →  BUILD SUCCESSFUL, tests=168 failures=0
+```
+
+- `IdempotencyServiceTest` (6) — PROCEED/REPLAY/IN_PROGRESS/MISMATCH/만료 재처리/동시 선점 레이스(유니크 위반).
+- `IdempotencyApiIntegrationTest` (4) — 실제 HTTP: 이중 거래 0(같은 tranId·원장 1행)·무키 대조군·422·동시 409.
+- `SettlementMockTest` (3) — 당일 처리내역 전문 소켓 왕복: 처리 거래 노출·망취소 statusFlag=99·날짜 접두어 필터.
+- `ReconciliationServiceTest` (5) — 4유형 결정론 분류·UNKNOWN 자동해소 매핑(CANCELED/FAILED)·해소 실패 시 CORE_ONLY·요약 저장.
+- `ReconciliationApiIntegrationTest` (1) — 실제 HTTP→소켓→원장: 정상 MATCH + 지연 UNKNOWN 자동해소 CANCELED.
+- `ModularityTest.verify()` 계속 그린 — 새 클래스 전부 기존 5모듈 경계 안(idempotency·recon은 ledger 내부,
+  settlement는 core, 대사 조립은 web). Documenter 다이어그램 갱신.
+
+### 잔여 (정직하게 안 함)
+
+- **DBTower 앱 미기동**: 대상 DB 준비 + 관제가 볼 수치 실측까지. 등록 API 실호출·대시보드 캡처는 안 함.
+- **대사는 잔액조회 중심**: 계정계 시뮬레이터가 잔액만 기록 — 이체·다계좌 대사는 확장 지점.
+- **멱등키 스코프**: `(키+메서드+경로)` + DB 유니크. 다중 노드도 같은 PG면 성립하나, 채번·대사는 여전히
+  단일 노드 전제. 스케줄러 cron 기본 비활성(데모는 수동 트리거).

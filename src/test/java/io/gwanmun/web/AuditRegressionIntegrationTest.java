@@ -45,6 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
 		"gwanmun.core.port=29099",
 		"gwanmun.core.history.port=29098",
+		"gwanmun.core.settlement.port=29097",
 		"gwanmun.core.mock.delay-ms=800",       // 지연 계좌가 read 타임아웃(3s) 안에 성공하게 — 서킷 오염 방지
 		"gwanmun.core.pool.max-size=1",          // 풀 고갈을 요청 2건으로 재현
 		"gwanmun.core.pool.borrow-timeout-ms=100",

@@ -2,8 +2,12 @@ package io.gwanmun.core;
 
 import io.gwanmun.message.AccountMasker;
 import io.gwanmun.message.MessageCodec;
+import io.gwanmun.message.VariableMessageCodec;
 import io.gwanmun.message.dto.BalanceInquiryRequest;
 import io.gwanmun.message.dto.BalanceInquiryResponse;
+import io.gwanmun.message.dto.DailySettlementHeader;
+import io.gwanmun.message.dto.DailySettlementRecord;
+import io.gwanmun.message.dto.DailySettlementRequest;
 import io.gwanmun.message.dto.NetCancelRequest;
 import io.gwanmun.message.dto.NetCancelResponse;
 import io.gwanmun.message.dto.TransactionStatusInquiryRequest;
@@ -18,6 +22,8 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -59,6 +65,10 @@ public final class MockCoreBankingServer implements Closeable {
 	private static final String STATUS_RESPONSE_TYPE = "0410";
 	private static final String CANCEL_RESPONSE_TYPE = "0430";
 
+	// 당일 처리내역 조회(Phase 9) — 가변 전문이라 별도 포트에서 길이 프리픽스 프레이밍으로 답한다.
+	private static final String SETTLEMENT_RESPONSE_TYPE = "0510";
+	private static final int SETTLEMENT_MAX_BODY = 9999;
+
 	private static final String OK_CODE = "0000";
 	private static final String OK_MESSAGE = "정상 처리되었습니다";
 	private static final String NOT_FOUND_CODE = "0001";
@@ -83,8 +93,10 @@ public final class MockCoreBankingServer implements Closeable {
 	private static final long DEFAULT_DELAY_MILLIS = 5000;
 
 	private final int requestedPort;
+	private final int requestedSettlementPort;
 	private final long delayMillis;
 	private final MessageCodec codec = new MessageCodec();
+	private final VariableMessageCodec variableCodec = new VariableMessageCodec(codec);
 	private final ExecutorService workers = Executors.newCachedThreadPool(r -> {
 		Thread t = new Thread(r, "core-worker");
 		t.setDaemon(true);
@@ -108,14 +120,26 @@ public final class MockCoreBankingServer implements Closeable {
 	private volatile boolean running;
 	private ServerSocket serverSocket;
 	private Thread acceptThread;
+	private ServerSocket settlementSocket;
+	private Thread settlementAcceptThread;
 
 	public MockCoreBankingServer(int port) {
 		this(port, DEFAULT_DELAY_MILLIS);
 	}
 
-	/** 테스트용: 지연 모드 대기 시간을 짧게 조절할 수 있다. */
+	/** 테스트용: 지연 모드 대기 시간을 짧게 조절할 수 있다. 대사 포트는 임의(0)로 띄운다. */
 	public MockCoreBankingServer(int port, long delayMillis) {
+		this(port, 0, delayMillis);
+	}
+
+	/**
+	 * 대사(당일 처리내역 조회) 포트까지 지정한다(Phase 9). settlementPort=0 이면 임의의 빈 포트에
+	 * 바인딩되고 {@link #settlementPort()}로 확인한다 — 잔액조회/상태조회/망취소와 <b>같은 인메모리
+	 * 원장을 공유</b>하므로, 이 서버가 처리·취소한 그대로가 대사 응답에 나온다.
+	 */
+	public MockCoreBankingServer(int port, int settlementPort, long delayMillis) {
 		this.requestedPort = port;
+		this.requestedSettlementPort = settlementPort;
 		this.delayMillis = delayMillis;
 	}
 
@@ -125,16 +149,26 @@ public final class MockCoreBankingServer implements Closeable {
 			return;
 		}
 		serverSocket = new ServerSocket(requestedPort);
+		settlementSocket = new ServerSocket(requestedSettlementPort);
 		running = true;
 		acceptThread = new Thread(this::acceptLoop, "core-accept");
 		acceptThread.setDaemon(true);
 		acceptThread.start();
-		log.info("목업 계정계 TCP 서버 기동: 포트={} (요청 전문 {}byte 대기)", port(), REQUEST_LENGTH);
+		settlementAcceptThread = new Thread(this::settlementAcceptLoop, "core-settlement-accept");
+		settlementAcceptThread.setDaemon(true);
+		settlementAcceptThread.start();
+		log.info("목업 계정계 TCP 서버 기동: 포트={} (요청 전문 {}byte 대기), 대사 포트={} (가변 응답)",
+				port(), REQUEST_LENGTH, settlementPort());
 	}
 
 	/** 실제 바인딩된 포트(임의 포트로 띄웠을 때 확인용). */
 	public int port() {
 		return serverSocket.getLocalPort();
+	}
+
+	/** 대사(당일 처리내역 조회) 포트. */
+	public int settlementPort() {
+		return settlementSocket.getLocalPort();
 	}
 
 	public int handledCount() {
@@ -158,6 +192,61 @@ public final class MockCoreBankingServer implements Closeable {
 				// close()로 소켓이 닫혀 accept가 깨지면 running=false 이므로 루프 종료.
 			}
 		}
+	}
+
+	/** 대사 포트 accept 루프 — 당일 처리내역 조회(가변 전문, 길이 프리픽스)를 처리한다(Phase 9). */
+	private void settlementAcceptLoop() {
+		while (running) {
+			try {
+				Socket socket = settlementSocket.accept();
+				workers.submit(() -> handleSettlement(socket));
+			} catch (IOException e) {
+				if (running) {
+					log.warn("대사 accept 실패", e);
+				}
+			}
+		}
+	}
+
+	/** 당일 처리내역 조회 한 연결 처리 — 길이 프리픽스 프레이밍으로 요청 본문을 읽고 가변 응답을 돌려준다. */
+	private void handleSettlement(Socket socket) {
+		try (LengthPrefixedConnection conn = new LengthPrefixedConnection(socket, SETTLEMENT_MAX_BODY)) {
+			byte[] requestBody;
+			while ((requestBody = conn.readFrame()) != null) {
+				conn.writeFrame(processSettlementInquiry(requestBody));
+			}
+		} catch (IOException e) {
+			log.debug("대사 연결 처리 종료: {}", e.getMessage());
+		}
+	}
+
+	/**
+	 * 당일 처리내역 조회 처리 — 인메모리 원장에서 그 날짜(거래고유번호 접두어)로 처리한 거래 전부를
+	 * 훑어 레코드로 만든다. 취소된 원거래는 statusFlag="99"로 나가, 게이트웨이 원장과 상태까지 대조된다.
+	 */
+	private byte[] processSettlementInquiry(byte[] requestBody) {
+		DailySettlementRequest req = codec.parse(requestBody, DailySettlementRequest.class);
+		String settleDate = req.getSettleDate();
+		String prefix = "GWMNU" + settleDate;
+
+		List<DailySettlementRecord> records = new ArrayList<>();
+		processed.forEach((tranId, tx) -> {
+			if (tranId.startsWith(prefix)) {
+				records.add(new DailySettlementRecord(tranId, tx.accountNo(),
+						Long.toString(tx.balance()),
+						tx.canceled() ? DailySettlementRecord.CANCELED : DailySettlementRecord.NORMAL));
+			}
+		});
+		records.sort((a, b) -> a.getTranId().compareTo(b.getTranId()));
+
+		int headerLen = MessageSpec.of(DailySettlementHeader.class).totalLength();
+		int recordLen = MessageSpec.of(DailySettlementRecord.class).totalLength();
+		int totalLength = headerLen + records.size() * recordLen;
+
+		DailySettlementHeader header = new DailySettlementHeader(SETTLEMENT_RESPONSE_TYPE, settleDate,
+				Integer.toString(records.size()), Integer.toString(totalLength), OK_CODE);
+		log.info("당일 처리내역 조회: 기준일={} 건수={} 본문={}byte", settleDate, records.size(), totalLength);
+		return variableCodec.build(header, records);
 	}
 
 	/**
@@ -301,6 +390,13 @@ public final class MockCoreBankingServer implements Closeable {
 		} catch (IOException e) {
 			log.debug("서버 소켓 종료 중 예외: {}", e.getMessage());
 		}
+		try {
+			if (settlementSocket != null) {
+				settlementSocket.close();
+			}
+		} catch (IOException e) {
+			log.debug("대사 소켓 종료 중 예외: {}", e.getMessage());
+		}
 		workers.shutdownNow();
 		log.info("목업 계정계 TCP 서버 종료 (처리한 요청 {}건)", handled.get());
 	}
@@ -311,10 +407,12 @@ public final class MockCoreBankingServer implements Closeable {
 	// ------------------------------------------------------------------
 	public static void main(String[] args) throws Exception {
 		int port = args.length > 0 ? Integer.parseInt(args[0]) : 9099;
-		MockCoreBankingServer server = new MockCoreBankingServer(port);
+		// 대사 포트는 두 번째 인자, 없으면 9097 고정(게이트웨이 SettlementClient 기본값과 일치).
+		int settlementPort = args.length > 1 ? Integer.parseInt(args[1]) : 9097;
+		MockCoreBankingServer server = new MockCoreBankingServer(port, settlementPort, DEFAULT_DELAY_MILLIS);
 		server.start();
 		Runtime.getRuntime().addShutdownHook(new Thread(server::close));
-		log.info("독립 실행 모드. 종료하려면 Ctrl+C. 포트={}", server.port());
+		log.info("독립 실행 모드. 종료하려면 Ctrl+C. 포트={} 대사포트={}", server.port(), server.settlementPort());
 		// accept 스레드가 데몬이라, 메인이 살아 있어야 프로세스가 유지된다.
 		Thread.currentThread().join();
 	}

@@ -9,5 +9,6 @@
 * `i.g.c.MockCoreBankingLifecycle`
 * `i.g.c.MockTransactionHistoryLifecycle`
 * `i.g.c.ResilienceSettings`
+* `i.g.c.SettlementClient`
 * `i.g.c.TransactionHistoryClient`
 |===

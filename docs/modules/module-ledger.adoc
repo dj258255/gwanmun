@@ -5,6 +5,8 @@
 |Spring components
 |_Services_
 
+* `i.g.l.IdempotencyService`
+* `i.g.l.ReconciliationLog`
 * `i.g.l.TransactionLedger`
 
 _Others_

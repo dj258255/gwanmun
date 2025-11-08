@@ -44,6 +44,12 @@ gwanmun:
     # 거래내역 조회(가변 전문, 길이 프리픽스 프레이밍) 목업 계정계 포트.
     history:
       port: 9098
+    # Phase 9 — 당일 처리내역 조회(EOD 대사) 포트. 잔액조회 계정계(9099)와 같은 인메모리 원장을
+    # 공유하는 한 프로세스가 이 포트도 함께 연다(가변 전문, 길이 프리픽스).
+    settlement:
+      port: 9097
+      # 하루치 전량이라 조회성 read 타임아웃보다 넉넉히.
+      read-timeout-ms: 10000
     # true면 앱과 함께 목업 계정계를 내장 기동(개발 편의).
     # false면 계정계를 독립 프로세스로 따로 띄운 "앱↔계정계 두 프로세스" 구성.
     embedded: true
@@ -91,6 +97,15 @@ gwanmun:
     # 데모에서 5건 연속 성공 후 429가 뜨는 것을 눈으로 보게 낮게 잡았다.
     rate-capacity: 5
     rate-refill-per-minute: 30
+  # Phase 9 — 멱등키(Idempotency-Key). 호출자 재전송을 게이트웨이가 구분·차단.
+  idempotency:
+    # 키 보존 기간(초). 관례는 24시간(토스). 지난 키는 없는 것으로 보고 새로 처리한다.
+    ttl-seconds: 86400
+    # 만료 키 청소 스케줄(기본 비활성). 예: "0 30 * * * *"(매시 30분).
+    purge-cron: "-"
+  # Phase 9 — EOD 대사 배치. 마감 시각 자동 실행(기본 비활성). 예: "0 5 0 * * *"(매일 00:05).
+  reconciliation:
+    cron: "-"
 
 logging:
   level:

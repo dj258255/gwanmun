@@ -97,7 +97,7 @@ public class TransactionLedger {
 					AccountMasker.mask(r.accountNo()), // 저장 직전 마스킹 — 원문은 여기서 끝난다.
 					r.status(), r.responseCode(), truncate(r.detail()),
 					r.requestedAt(), r.requestedAt().plusMillis(r.elapsedMs()),
-					r.elapsedMs(), r.correlationId()));
+					r.elapsedMs(), r.correlationId(), r.amount()));
 		} catch (RuntimeException e) {
 			// 원장 DB 장애가 거래 장애로 번지면 안 된다. 거래는 이미 끝났고, 여기선 기록만 실패했다.
 			// 단, 삼켜진 실패(unique 위반 포함)는 dropped 카운터에 남긴다 — 유실은 보이는 유실이어야 한다.
@@ -119,6 +119,16 @@ public class TransactionLedger {
 	public List<LedgerView> byStatus(TransactionStatus status, int limit) {
 		int n = Math.max(1, Math.min(MAX_RECENT_LIMIT, limit));
 		return repository.findByStatusOrderByIdDesc(status, PageRequest.of(0, n)).stream()
+				.map(TransactionLedger::view)
+				.toList();
+	}
+
+	/**
+	 * 당일 거래 전량(모든 상태) — EOD 대사가 계정계측 기록과 대조할 대상이다(Phase 9).
+	 * 거래고유번호가 날짜를 자기설명하므로({@code GWMNU+YYYYMMDD+...}) 그 접두어로 하루치를 고른다.
+	 */
+	public List<LedgerView> ofDay(String yyyymmdd) {
+		return repository.findByTransactionIdStartingWithOrderByIdDesc("GWMNU" + yyyymmdd).stream()
 				.map(TransactionLedger::view)
 				.toList();
 	}
@@ -153,7 +163,7 @@ public class TransactionLedger {
 		return new LedgerView(e.getTransactionId(), e.getTxCode(), e.getAccountMasked(),
 				e.getStatus(), e.getResponseCode(), e.getDetail(),
 				e.getRequestedAt(), e.getElapsedMs(), e.getCorrelationId(),
-				e.getResolvedAt(), e.getResolutionMethod());
+				e.getResolvedAt(), e.getResolutionMethod(), e.getAmount());
 	}
 
 	/** 상태별 누적 건수(전 상태, 없으면 0 — Phase 6부터 해소 결과 CANCELED 포함). */
@@ -205,8 +215,16 @@ public class TransactionLedger {
 			String detail,
 			Instant requestedAt,
 			long elapsedMs,
-			String correlationId
+			String correlationId,
+			Long amount
 	) {
+		/** 뒤 호환 — 금액 개념이 없는 거래(입력 오류·실패·거래내역)는 amount=null 로 채운다. */
+		public LedgerRecord(String transactionId, String txCode, String accountNo,
+				TransactionStatus status, String responseCode, String detail,
+				Instant requestedAt, long elapsedMs, String correlationId) {
+			this(transactionId, txCode, accountNo, status, responseCode, detail,
+					requestedAt, elapsedMs, correlationId, null);
+		}
 	}
 
 	/**
@@ -226,7 +244,8 @@ public class TransactionLedger {
 			long elapsedMs,
 			String correlationId,
 			Instant resolvedAt,
-			String resolutionMethod
+			String resolutionMethod,
+			Long amount
 	) {
 	}
 }

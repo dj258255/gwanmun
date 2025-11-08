@@ -34,6 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 		// 다른 통합 테스트의 컨텍스트(9099/9098 점유)와 공존하도록 내장 목업 포트를 옮긴다.
 		"gwanmun.core.port=19099",
 		"gwanmun.core.history.port=19098",
+		"gwanmun.core.settlement.port=19097",
 		"gwanmun.core.read-timeout-ms=300",
 		"gwanmun.core.resilience.transaction-deadline-ms=1200",
 		"gwanmun.core.resilience.retry-max=1",

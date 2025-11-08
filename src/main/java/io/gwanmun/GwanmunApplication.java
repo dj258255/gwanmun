@@ -3,6 +3,7 @@ package io.gwanmun;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * gwanmun(관문) — 레거시 고정길이 전문(電文)과 현대 REST/JSON을 잇는 연계 게이트웨이.
@@ -13,6 +14,7 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  */
 @SpringBootApplication
 @ConfigurationPropertiesScan
+@EnableScheduling // Phase 9 — EOD 대사 스케줄러(기본 비활성 cron)·멱등키 TTL 청소.
 public class GwanmunApplication {
 
 	public static void main(String[] args) {

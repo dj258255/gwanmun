@@ -1,10 +1,14 @@
 package io.gwanmun.web;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.gwanmun.core.CircuitOpenException;
 import io.gwanmun.core.PoolExhaustedException;
 import io.gwanmun.gateway.GatewayException;
 import io.gwanmun.gateway.GatewayService;
 import io.gwanmun.gateway.GatewayService.GatewayResult;
+import io.gwanmun.ledger.IdempotencyService;
+import io.gwanmun.ledger.IdempotencyService.Decision;
 import io.gwanmun.ledger.TransactionIdGenerator;
 import io.gwanmun.ledger.TransactionLedger;
 import io.gwanmun.ledger.TransactionLedger.LedgerRecord;
@@ -16,14 +20,18 @@ import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -54,16 +62,27 @@ public class GatewayController {
 	/** 잔액조회 거래코드(요청 전문의 txCode 필드와 동일한 값). */
 	private static final String TX_CODE_BALANCE = "IN01";
 
+	/** 이 엔드포인트의 경로 — 멱등키 스코프(키+메서드+경로)의 일부. */
+	private static final String PATH = "/api/gateway/balance";
+
 	private final GatewayService gateway;
 	private final TransactionLedger ledger;
 	private final TransactionIdGenerator txIds;
+	private final IdempotencyService idempotency;
+	private final ObjectMapper objectMapper;
+	private final Duration idempotencyTtl;
 	private final Timer roundtripTimer;
 
 	public GatewayController(GatewayService gateway, TransactionLedger ledger,
-			TransactionIdGenerator txIds, MeterRegistry meterRegistry) {
+			TransactionIdGenerator txIds, IdempotencyService idempotency, ObjectMapper objectMapper,
+			@Value("${gwanmun.idempotency.ttl-seconds:86400}") long idempotencyTtlSeconds,
+			MeterRegistry meterRegistry) {
 		this.gateway = gateway;
 		this.ledger = ledger;
 		this.txIds = txIds;
+		this.idempotency = idempotency;
+		this.objectMapper = objectMapper;
+		this.idempotencyTtl = Duration.ofSeconds(idempotencyTtlSeconds);
 		// 커스텀 메트릭: 계정계 TCP 왕복 latency 타이머(거래 종류 태그).
 		this.roundtripTimer = Timer.builder("gwanmun.core.roundtrip")
 				.description("계정계 TCP 소켓 왕복 소요 시간")
@@ -71,9 +90,69 @@ public class GatewayController {
 				.register(meterRegistry);
 	}
 
+	/**
+	 * 잔액조회. {@code Idempotency-Key} 헤더가 있으면 재전송을 게이트웨이가 구분한다(Phase 9) —
+	 * 처리 중 재요청은 409, 완료된 요청 재수신은 저장된 원응답을 <b>재실행 없이</b> 되돌려준다.
+	 * 헤더가 없으면 Phase 8까지의 동작 그대로다.
+	 */
 	@PostMapping("/balance")
-	public ResponseEntity<?> balance(@RequestBody BalanceRequest req) {
-		String transactionId = txIds.next(); // 결과가 어떻든 이 거래에는 ID가 있다.
+	public ResponseEntity<?> balance(@RequestBody BalanceRequest req,
+			@RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+		if (idempotencyKey == null || idempotencyKey.isBlank()) {
+			return doBalance(req, txIds.next()); // 멱등키 없음 — 기존 동작.
+		}
+
+		String accountNo = req.accountNo() == null ? "" : req.accountNo().trim();
+		String fingerprint = IdempotencyService.fingerprint("POST " + PATH + " accountNo=" + accountNo);
+		String transactionId = txIds.next();
+
+		Decision d = idempotency.begin(idempotencyKey, "POST", PATH, fingerprint, transactionId, idempotencyTtl);
+		switch (d.kind()) {
+			case REPLAY -> {
+				// 완료된 원응답을 그대로 — 재실행 없음(계정계 호출 0, 새 거래 0).
+				return ResponseEntity.status(d.httpStatus())
+						.header("X-Idempotent-Replay", "true")
+						.contentType(MediaType.APPLICATION_JSON)
+						.body(d.responseBody());
+			}
+			case IN_PROGRESS -> {
+				return ResponseEntity.status(HttpStatus.CONFLICT)
+						.body(Map.of("error", "같은 멱등키의 요청이 처리 중입니다. 잠시 후 결과를 조회하세요.",
+								"idempotencyKey", idempotencyKey));
+			}
+			case PAYLOAD_MISMATCH -> {
+				return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+						.body(Map.of("error", "같은 멱등키에 다른 요청 본문입니다. 멱등키를 재사용할 수 없습니다.",
+								"idempotencyKey", idempotencyKey));
+			}
+			default -> { /* PROCEED — 아래에서 실제 처리 */ }
+		}
+
+		ResponseEntity<?> response = doBalance(req, transactionId);
+		int status = response.getStatusCode().value();
+		if (status == HttpStatus.SERVICE_UNAVAILABLE.value()) {
+			// 내부 포화(풀 고갈·서킷 OPEN)의 503은 일시적 실패라 원응답으로 굳히지 않는다 —
+			// 같은 멱등키로 재시도할 수 있게 선점을 놓아준다.
+			idempotency.release(idempotencyKey, "POST", PATH);
+		} else {
+			idempotency.complete(idempotencyKey, "POST", PATH, status, serialize(response.getBody()));
+		}
+		return ResponseEntity.status(status)
+				.header("X-Idempotent-Replay", "false")
+				.contentType(MediaType.APPLICATION_JSON)
+				.body(response.getBody());
+	}
+
+	/** 저장·재반환을 위해 응답 바디를 JSON 문자열로 굳힌다. */
+	private String serialize(Object body) {
+		try {
+			return objectMapper.writeValueAsString(body);
+		} catch (JsonProcessingException e) {
+			throw new IllegalStateException("응답 직렬화 실패", e);
+		}
+	}
+
+	private ResponseEntity<?> doBalance(BalanceRequest req, String transactionId) {
 		String accountNo = req.accountNo() == null ? "" : req.accountNo().trim();
 		Instant requestedAt = Instant.now();
 
@@ -136,16 +215,27 @@ public class GatewayController {
 
 		// 응답을 받았다 — 응답코드가 정상이면 SUCCESS, 오류 코드(없는 계좌 등)면 FAILED.
 		TransactionStatus status = TransactionStatus.ofResponseCode(r.response().getResponseCode());
+		// EOD 대사가 계정계측 기록과 대조할 금액을 원장에 남긴다(SUCCESS만 — 잔액이 곧 대조 수치).
+		Long amount = status == TransactionStatus.SUCCESS ? parseAmount(r.response().getBalance()) : null;
 		ledger.record(new LedgerRecord(transactionId, TX_CODE_BALANCE, accountNo,
 				status, r.response().getResponseCode(),
 				status == TransactionStatus.SUCCESS ? null : r.response().getResponseMessage(),
-				requestedAt, r.elapsedMs(), correlationId()));
+				requestedAt, r.elapsedMs(), correlationId(), amount));
 
 		return ResponseEntity.ok(new BalanceRoundTrip(
 				transactionId, status.name(),
 				HexFormat2.toHex(r.requestFrame()), HexFormat2.toAscii(r.requestFrame()), r.requestFrame().length,
 				HexFormat2.toHex(r.responseFrame()), HexFormat2.toAscii(r.responseFrame()), r.responseFrame().length,
 				r.response(), r.coreHost() + ":" + r.corePort(), r.elapsedMs()));
+	}
+
+	/** 잔액 문자열을 대사용 금액(Long)으로 — 파싱 불가면 null(대사에서 금액 대조 제외). */
+	private static Long parseAmount(String balance) {
+		try {
+			return balance == null || balance.isBlank() ? null : Long.parseLong(balance.trim());
+		} catch (NumberFormatException e) {
+			return null;
+		}
 	}
 
 	/** 현재 요청의 correlation ID(CorrelationIdFilter가 MDC에 넣어 둔 값). */

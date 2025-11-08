@@ -8,6 +8,9 @@ services:
   ledger-db:
     image: postgres:16-alpine
     container_name: gwanmun-ledger-db
+    # Phase 9 — 이 PG를 DBTower(관제)의 관측 대상으로 등록할 수 있게 pg_stat_statements를 미리 로드한다.
+    # (관제는 데이터 경로 밖에서 원장 insert 경합·슬로우쿼리·락을 본다 — docs/DBTOWER-INTEGRATION.md)
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
     environment:
       POSTGRES_DB: gwanmun
       POSTGRES_USER: gwanmun

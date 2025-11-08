@@ -21,4 +21,7 @@ public interface LedgerEntryRepository extends JpaRepository<LedgerEntry, Long> 
 
 	/** 특정 상태의 거래 N건(최신 먼저) — UNKNOWN 목록용(Phase 6). */
 	List<LedgerEntry> findByStatusOrderByIdDesc(TransactionStatus status, Pageable pageable);
+
+	/** 거래고유번호 접두어로 하루치 전량 — EOD 대사 대상(Phase 9). */
+	List<LedgerEntry> findByTransactionIdStartingWithOrderByIdDesc(String prefix);
 }
