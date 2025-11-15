@@ -65,15 +65,15 @@ hex(EUC-KR 한글 포함), 최종 JSON까지. 아래 hex는 실제로 소켓을 
 
 ## 진행
 
-- **Phase 1** — 고정길이 전문 파서/빌더(EUC-KR, 패딩, 길이 검증) + 데모 화면
-- **Phase 2** — TCP 프레이밍(partial read 재조립) + 목업 계정계 + 게이트웨이 왕복(REST→전문→TCP→JSON)
-- **Phase 3** — 필터 체인(인증·라우팅·유량제어) + Spring Modulith 모듈러 모놀리스
-- **Phase 4** — 가변길이 전문(길이 프리픽스 프레이밍) + 커넥션 풀
-- **Phase 5** — 관측 가능한 거래 원장(거래ID 채번, 3값 상태 SUCCESS/FAILED/UNKNOWN, 비동기 적재, 계좌 마스킹) + correlation ID·Prometheus 메트릭·헬스 프로브
-- **Phase 6** — 장애 내성(자체 서킷브레이커·조회성 한정 재시도·거래 데드라인) + UNKNOWN 해소(거래상태조회·망취소 전문 → CANCELED/FAILED 확정, 해소 이력 기록)
-- **Phase 7** — 감사 결함 소탕 + 보안 경화(풀 고갈이 서킷을 열고 원장에 구멍 내던 3중 오작동 수정, 계정계 이상 응답의 원장 공백 차단, 유휴 커넥션 TTL, 채번 자정 재시드, EUC-KR fail-closed 인코딩, API 키 로그·에러 응답 정보 노출 제거, /api/history 관문 편입 — 전/후 실측 대비)
-- **Phase 8** — CI(GitHub Actions) + A3 서킷 stale 결과 귀속 수정(permit 세대 토큰 — 부하가 드러낸 레이스, staleResultsTotal=197로 실재 확인) + k6 부하 실측(한계 ~10–12k TPS, 게이트웨이 경유 오버헤드 ~0.21ms, 빠른 실패의 값: 죽은 백엔드에서 서킷 off 351 vs on 9,425 req/s) + Spring Boot 3.5.4 업그레이드 + MIT LICENSE
-- **Phase 9** — 멱등키(호출자 재전송을 (키+메서드+경로)로 구분, DB 유니크 선점 — 처리 중 409·완료 재수신 원응답 재반환·이중 거래 0) + EOD 대사 배치(계정계 당일 처리내역 vs 원장 전량 대조, 불일치 4유형 분류 + UNKNOWN 자동 해소) + [DBTower 연계](docs/DBTOWER-INTEGRATION.md)(원장 PG를 관제 대상으로 — pg_stat_statements·최소권한 모니터 계정까지 준비·실측)
+- **1단계** — 고정길이 전문 파서/빌더(EUC-KR, 패딩, 길이 검증) + 데모 화면
+- **2단계** — TCP 프레이밍(partial read 재조립) + 목업 계정계 + 게이트웨이 왕복(REST→전문→TCP→JSON)
+- **3단계** — 필터 체인(인증·라우팅·유량제어) + Spring Modulith 모듈러 모놀리스
+- **4단계** — 가변길이 전문(길이 프리픽스 프레이밍) + 커넥션 풀
+- **5단계** — 관측 가능한 거래 원장(거래ID 채번, 3값 상태 SUCCESS/FAILED/UNKNOWN, 비동기 적재, 계좌 마스킹) + correlation ID·Prometheus 메트릭·헬스 프로브
+- **6단계** — 장애 내성(자체 서킷브레이커·조회성 한정 재시도·거래 데드라인) + UNKNOWN 해소(거래상태조회·망취소 전문 → CANCELED/FAILED 확정, 해소 이력 기록)
+- **7단계** — 감사 결함 소탕 + 보안 경화(풀 고갈이 서킷을 열고 원장에 구멍 내던 3중 오작동 수정, 계정계 이상 응답의 원장 공백 차단, 유휴 커넥션 TTL, 채번 자정 재시드, EUC-KR fail-closed 인코딩, API 키 로그·에러 응답 정보 노출 제거, /api/history 관문 편입 — 전/후 실측 대비)
+- **8단계** — CI(GitHub Actions) + A3 서킷 stale 결과 귀속 수정(permit 세대 토큰 — 부하가 드러낸 레이스, staleResultsTotal=197로 실재 확인) + k6 부하 실측(한계 ~10–12k TPS, 게이트웨이 경유 오버헤드 ~0.21ms, 빠른 실패의 값: 죽은 백엔드에서 서킷 off 351 vs on 9,425 req/s) + Spring Boot 3.5.4 업그레이드 + MIT LICENSE
+- **9단계** — 멱등키(호출자 재전송을 (키+메서드+경로)로 구분, DB 유니크 선점 — 처리 중 409·완료 재수신 원응답 재반환·이중 거래 0) + EOD 대사 배치(계정계 당일 처리내역 vs 원장 전량 대조, 불일치 4유형 분류 + UNKNOWN 자동 해소) + [DBTower 연계](docs/DBTOWER-INTEGRATION.md)(원장 PG를 관제 대상으로 — pg_stat_statements·최소권한 모니터 계정까지 준비·실측)
 
 각 단계의 함정·판단·검증은 [docs/ROADMAP.md](docs/ROADMAP.md)와 [docs/VERIFICATION.md](docs/VERIFICATION.md)에 있다.
 

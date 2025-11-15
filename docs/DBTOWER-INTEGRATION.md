@@ -1,4 +1,4 @@
-# DBTower 연계 — 거래 원장 PG를 관제 대상으로 (Phase 9)
+# DBTower 연계 — 거래 원장 PG를 관제 대상으로 (9단계)
 
 gwanmun의 거래 원장(PostgreSQL, 호스트 포트 25432, 컨테이너 `gwanmun-ledger-db`)을
 **DBTower**([dj258255/dbtower](https://github.com/dj258255/dbtower)) 관제탑의 관측 대상으로
@@ -18,11 +18,11 @@ DBTower를 전혀 모른다(의존 0). 연결은 순전히 운영 구성이다.
 
 ## 관제가 잡아 줄 것 — 부하가 원장에 남기는 흔적
 
-Phase 8 부하 실측에서 게이트웨이 처리량 천장은 웹 계층(blocking thread-per-request)이었지만,
+8단계 부하 실측에서 게이트웨이 처리량 천장은 웹 계층(blocking thread-per-request)이었지만,
 원장 **insert**는 모든 거래 경로가 지나는 비동기 적재 지점이다. 부하가 커지면 여기서:
 
 - **원장 insert 경합·슬로우쿼리** — `transaction_ledger`로의 insert가 느려지면 적재 큐가 밀리고
-  (Phase 7 `gwanmun.ledger.dropped` 카운터가 유실을 세지만, **왜** 느린지는 못 본다).
+  (7단계 `gwanmun.ledger.dropped` 카운터가 유실을 세지만, **왜** 느린지는 못 본다).
 - **락 대기** — 대사(reconciliation)의 UPDATE(UNKNOWN→CANCELED)와 적재 insert가 겹치는 구간.
 - **인덱스 효율** — `idx_ledger_tx_id`(unique)·`idx_ledger_status` 사용 여부, 대사의 접두어 스캔.
 
