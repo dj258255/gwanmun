@@ -19,6 +19,20 @@
 - **① API 게이트웨이 층** — 필터 체인으로 인증·라우팅·유량제어를 직접 구현한다(프레임워크 통짜 대신 손으로).
 - **② 연계(통역) 층** — 고정길이/가변길이 전문 ↔ JSON 매핑, TCP ↔ HTTP 변환, 거래코드 라우팅.
 
+### 상세 아키텍처 (모듈·포트 단위)
+
+같은 그림을 코드 단위로 내리면 아래처럼 된다. 색 구역이 Spring Modulith 5모듈(web·gateway·message·core·ledger)의
+경계이고, 목업 계정계 3서버(9099·9098·9097)와 원장 PostgreSQL(25432)까지 실제 포트 그대로다.
+
+![gwanmun 상세 서버 아키텍처 — 5모듈 경계, 필터 체인, 장애 내성, 비동기 원장 적재, 목업 계정계 3서버](docs/architecture-detail.svg)
+
+### 원장 DB ERD
+
+원장은 테이블 3개가 전부다 — 거래 원장(transaction_ledger), 멱등키(idempotency_key), EOD 대사 이력(reconciliation_run).
+테이블 사이는 물리 FK 없이 값(tran_id·settle_date)으로 잇는 논리 관계다(원장이 비동기 적재라 멱등키 시점에 원장 행이 아직 없을 수 있다).
+
+![gwanmun 원장 DB ERD — transaction_ledger · idempotency_key · reconciliation_run](docs/erd.svg)
+
 ## 데모 (실측 화면)
 
 REST 요청이 전문으로 바뀌어 TCP로 계정계를 다녀오는 왕복 — 나간 요청 전문 hex, 돌아온 응답 전문
