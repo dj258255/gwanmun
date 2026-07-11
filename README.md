@@ -1,4 +1,4 @@
-# gwanmun(관문) — 레거시 전문과 현대 REST를 잇는 연계 게이트웨이
+# <img src="docs/icon.svg" width="34" align="top"> gwanmun(관문) — 레거시 전문과 현대 REST를 잇는 연계 게이트웨이
 
 [![CI](https://github.com/dj258255/gwanmun/actions/workflows/ci.yml/badge.svg)](https://github.com/dj258255/gwanmun/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
